@@ -107,52 +107,78 @@ data class SchemaMapping(
     val statusCol: String?,
     val notesCol: String?,
     val followUpCol: String?,
+    val followUpDateCol: String?,
+    val extraNotesCol: String?,
     val lastCallCol: String?,
     val assignedCol: String?,
     val dateCol: String?,
     val allHeaders: List<String>
 ) {
     fun isLockedColumn(header: String): Boolean = header == nameCol || header == phoneCol
-    fun isDateColumn(header: String): Boolean = header == dateCol || header == lastCallCol
+
+    fun isDateColumn(header: String): Boolean =
+        header == dateCol ||
+            header == lastCallCol ||
+            header == followUpDateCol ||
+            header.trim().contains("date", ignoreCase = true)
 
     val noteColumnOptions: List<String>
         get() {
             val excluded = setOfNotNull(
-                nameCol, phoneCol, dateCol, lastCallCol, statusCol, followUpCol, assignedCol, websiteCol
+                nameCol,
+                phoneCol,
+                dateCol,
+                lastCallCol,
+                statusCol,
+                followUpCol,
+                followUpDateCol,
+                extraNotesCol,
+                assignedCol,
+                websiteCol
             )
-            return allHeaders.filter { it !in excluded }
+            return allHeaders.filter { it !in excluded && !isDateColumn(it) }
         }
 
     companion object {
         fun detect(headers: List<String>): SchemaMapping {
-            fun findFirst(vararg keywords: String): String? {
+            fun findFirst(exclude: Set<String> = emptySet(), vararg keywords: String): String? {
+                val pool = headers.filter { it !in exclude }
                 for (kw in keywords) {
-                    val exact = headers.firstOrNull { it.trim().equals(kw, ignoreCase = true) }
+                    val exact = pool.firstOrNull { it.trim().equals(kw, ignoreCase = true) }
                     if (exact != null) return exact
                 }
                 for (kw in keywords) {
-                    val partial = headers.firstOrNull { it.trim().contains(kw, ignoreCase = true) }
+                    val partial = pool.firstOrNull { it.trim().contains(kw, ignoreCase = true) }
                     if (partial != null) return partial
                 }
                 return null
             }
 
-            val nameCol = findFirst("name", "business", "company", "lead", "client", "shop", "store", "title")
+            val nameCol = findFirst(emptySet(), "name", "business", "company", "lead", "client", "shop", "store", "title")
                 ?: headers.firstOrNull()
-            val phoneCol = findFirst("numbers", "phone", "mobile", "number", "contact", "tel", "whatsapp")
-            val websiteCol = findFirst("website", "url", "site", "domain", "link", "web")
-            val statusCol = findFirst("lead type", "status", "stage", "result", "outcome", "state", "type")
-            val followUpCol = findFirst("follow-ups", "follow-up", "follow up", "followup", "callback", "next call")
-            val lastCallCol = findFirst("last call", "last called", "called on")
-            val assignedCol = findFirst("assined to", "assigned to", "assigned", "owner", "caller")
-            val dateCol = findFirst("date", "created", "added")
+            val phoneCol = findFirst(emptySet(), "numbers", "phone", "mobile", "number", "contact", "tel", "whatsapp")
+            val websiteCol = findFirst(emptySet(), "website", "url", "site", "domain", "link", "web")
+            val statusCol = findFirst(emptySet(), "lead type", "status", "stage", "result", "outcome", "state", "type")
+            val followUpDateCol = findFirst(emptySet(), "follow up date", "follow-up date", "followup date", "next call date", "callback date")
+            val extraNotesCol = findFirst(emptySet(), "extra notes", "extra note", "additional notes", "other notes")
+            val followUpCol = findFirst(setOfNotNull(followUpDateCol), "follow-ups", "follow-up", "follow up", "followup", "callback")
+            val lastCallCol = findFirst(emptySet(), "last call", "last called", "called on")
+            val assignedCol = findFirst(emptySet(), "assined to", "assigned to", "assigned", "owner", "caller")
+            val dateCol = findFirst(setOfNotNull(followUpDateCol, lastCallCol), "date", "created", "added")
 
             val excluded = setOfNotNull(
-                nameCol, phoneCol, dateCol, lastCallCol, statusCol, followUpCol, assignedCol, websiteCol
+                nameCol,
+                phoneCol,
+                dateCol,
+                lastCallCol,
+                statusCol,
+                followUpCol,
+                followUpDateCol,
+                extraNotesCol,
+                assignedCol,
+                websiteCol
             )
-            val notesCol = findFirst("caller notes", "call notes", "notes", "note", "remarks", "comment", "summary", "faizan")
-                ?.takeIf { it !in excluded }
-                ?: headers.firstOrNull { it !in excluded }
+            val notesCol = headers.firstOrNull { it !in excluded && !it.trim().contains("date", ignoreCase = true) }
 
             return SchemaMapping(
                 nameCol = nameCol,
@@ -161,6 +187,8 @@ data class SchemaMapping(
                 statusCol = statusCol,
                 notesCol = notesCol,
                 followUpCol = followUpCol,
+                followUpDateCol = followUpDateCol,
+                extraNotesCol = extraNotesCol,
                 lastCallCol = lastCallCol,
                 assignedCol = assignedCol,
                 dateCol = dateCol,

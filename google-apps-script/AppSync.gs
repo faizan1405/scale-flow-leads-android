@@ -1,12 +1,12 @@
 /**
- * Scale Flow Leads — Google Sheets Real-Time Sync Bridge v1.4
+ * Scale Flow Leads — Google Sheets Real-Time Sync Bridge v1.5
  *
- * NEW IN v1.4:
+ * FEATURES:
  * - Reads Google Sheet Data Validation dropdown options (e.g. Arshi, Faizan, Saurabh, Open)
- *   even when 0 leads are assigned to a person yet!
+ *   even when 0 leads are assigned yet.
  * - Dynamically ignores hidden helper columns (like hidden col J) and supports unlimited future columns.
- * - Auto-creates an immutable "History" tab and logs every call duration, status change,
- *   follow-up change, date update, and note as a permanent new row.
+ * - Auto-creates a cleanly color-styled, permanent "History" tab logging every call duration,
+ *   status change, follow-up update, date edit, and note.
  *
  * HOW TO UPDATE YOUR EXISTING DEPLOYMENT (1 minute, keeps the SAME Web App URL):
  * 1. Open Extensions -> Apps Script -> click AppSync.gs.
@@ -115,7 +115,6 @@ function doPost(e) {
           const oldVal = String(existingRow[col.colIndex - 1] || "");
           sheet.getRange(rowIndex, col.colIndex).setValue(newVal);
 
-          // Append an immutable row in History for every meaningful field change (skip auto Last Call noise if other fields changed)
           if (newVal !== oldVal && header.toLowerCase() !== "last call") {
             appSyncAppendHistoryRow_(ss, {
               caller: caller,
@@ -154,9 +153,6 @@ function appSyncAuthorized_(key) {
   return String(key || "") === String(APP_SYNC_CONFIG.API_KEY);
 }
 
-/**
- * Dynamically detects all visible header columns (skips hidden helper columns like hidden col J).
- */
 function appSyncGetVisibleColumns_(sheet) {
   const lastCol = sheet.getLastColumn();
   if (lastCol === 0) return { headers: [], columns: [] };
@@ -173,9 +169,6 @@ function appSyncGetVisibleColumns_(sheet) {
   return { headers: headers, columns: columns };
 }
 
-/**
- * Extracts Google Sheets Data Validation dropdown options from row 2 (or first validated row) for every visible column.
- */
 function appSyncReadDropdownOptions_(sheet, columns) {
   const result = {};
   const maxCheckRow = Math.min(Math.max(sheet.getLastRow(), 2), 5);
@@ -242,6 +235,7 @@ function appSyncReadSheet_(sheet) {
 
 function appSyncEnsureHistorySheet_(ss) {
   let hist = ss.getSheetByName(APP_SYNC_CONFIG.HISTORY_SHEET);
+  const isNew = !hist;
   if (!hist) {
     hist = ss.insertSheet(APP_SYNC_CONFIG.HISTORY_SHEET);
     hist.appendRow([
@@ -256,8 +250,22 @@ function appSyncEnsureHistorySheet_(ss) {
       "New Value",
       "Call Duration"
     ]);
-    hist.setFrozenRows(1);
-    hist.getRange(1, 1, 1, 10).setFontWeight("bold");
+  }
+  // Ensure executive header styling on row 1
+  const headerRange = hist.getRange(1, 1, 1, 10);
+  headerRange
+    .setBackground("#1E3A8A")
+    .setFontColor("#FFFFFF")
+    .setFontWeight("bold")
+    .setFontSize(11)
+    .setHorizontalAlignment("center")
+    .setVerticalAlignment("middle");
+  hist.setRowHeight(1, 36);
+  hist.setFrozenRows(1);
+
+  if (isNew) {
+    const widths = [180, 110, 65, 170, 125, 95, 130, 180, 220, 120];
+    widths.forEach(function(w, i) { hist.setColumnWidth(i + 1, w); });
   }
   return hist;
 }
@@ -279,6 +287,41 @@ function appSyncAppendHistoryRow_(ss, entry) {
     entry.newValue || "",
     entry.callDuration || ""
   ]);
+
+  // Color-code the newly added row cleanly by action & status
+  const lastRow = hist.getLastRow();
+  const rowRange = hist.getRange(lastRow, 1, 1, 10);
+  const actionLower = String(entry.action || "").toLowerCase();
+  const newValLower = String(entry.newValue || "").toLowerCase();
+
+  let bg = "#F8FAFC";
+  let actionFg = "#1E40AF";
+  if (actionLower === "call") {
+    bg = "#DCFCE7"; // Soft green for phone calls
+    actionFg = "#166534";
+  } else if (newValLower.indexOf("lost") !== -1) {
+    bg = "#FEE2E2"; // Soft red for Lost
+    actionFg = "#B91C1C";
+  } else if (newValLower.indexOf("won") !== -1 || newValLower.indexOf("qualified") !== -1) {
+    bg = "#DBEAFE"; // Soft blue for Won / Qualified
+    actionFg = "#1D4ED8";
+  } else if (newValLower.indexOf("proposal") !== -1 || newValLower.indexOf("follow") !== -1 || newValLower.indexOf("done") !== -1) {
+    bg = "#FEF3C7"; // Soft amber for Follow-up / Proposal
+    actionFg = "#B45309";
+  }
+
+  rowRange
+    .setBackground(bg)
+    .setFontColor("#0F172A")
+    .setFontSize(10)
+    .setVerticalAlignment("middle")
+    .setWrap(true)
+    .setBorder(true, true, true, true, true, true, "#CBD5E1", SpreadsheetApp.BorderStyle.SOLID);
+
+  // Highlight the Action cell (col 6) with bold color
+  hist.getRange(lastRow, 6).setFontWeight("bold").setFontColor(actionFg).setHorizontalAlignment("center");
+  hist.getRange(lastRow, 3).setHorizontalAlignment("center");
+  hist.setRowHeight(lastRow, 32);
 }
 
 function appSyncReadHistory_(ss, limit) {

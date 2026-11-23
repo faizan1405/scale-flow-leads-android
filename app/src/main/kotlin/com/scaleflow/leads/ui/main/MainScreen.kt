@@ -247,6 +247,7 @@ fun MainScreen(viewModel: MainScreenViewModel) {
         PostCallQuickNoteSheet(
             lead = postCallLead,
             schema = state.schema,
+            callerNoteColumns = state.callerNoteColumns,
             activeNoteColumn = state.activeNoteColumn,
             isNoteColumnLockedByProfile = state.isNoteColumnLockedByProfile,
             detectedDuration = state.lastDetectedCallDuration,
@@ -1150,13 +1151,22 @@ private fun SwipableLeadDetailsScreen(
                 onCopyPhone = onCopyPhone,
                 onSelectNoteColumn = { col -> viewModel.updatePreferredNoteColumn(col) },
                 onSaveCallerNote = { col, note -> viewModel.saveCallerNote(lead.rowIndex, col, note) },
+                onQuickUpdateField = { fieldName, newValue ->
+                    viewModel.saveLeadEdits(
+                        rowIndex = lead.rowIndex,
+                        updatedFields = mapOf(fieldName to newValue),
+                        closeSheet = false,
+                        autoStampLastCall = fieldName != state.schema.lastCallCol,
+                        successMsg = "Updated $fieldName"
+                    )
+                },
                 onOpenEditAll = { viewModel.openEditAllSheet() }
             )
         }
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun LeadDetailsPageContent(
     lead: LeadRow,
@@ -1169,6 +1179,7 @@ private fun LeadDetailsPageContent(
     onCopyPhone: (String) -> Unit,
     onSelectNoteColumn: (String) -> Unit,
     onSaveCallerNote: (targetColumn: String?, note: String) -> Unit,
+    onQuickUpdateField: (fieldName: String, newValue: String) -> Unit,
     onOpenEditAll: () -> Unit
 ) {
     val schema = state.schema
@@ -1179,7 +1190,77 @@ private fun LeadDetailsPageContent(
 
     var callerNoteInput by remember(lead.rowIndex) { mutableStateOf("") }
     var followUpDropdownExpanded by remember { mutableStateOf(false) }
+    var quickDateColumn by remember(lead.rowIndex) { mutableStateOf<String?>(null) }
+    var quickTextColumn by remember(lead.rowIndex) { mutableStateOf<String?>(null) }
     val (_, badgeBg, badgeFg) = statusPalette(leadType)
+
+    // Instant Calendar Picker when tapping Date, Last Call, or Follow up Date inside Lead Information!
+    if (quickDateColumn != null) {
+        val targetCol = quickDateColumn!!
+        val datePickerState = rememberDatePickerState()
+        DatePickerDialog(
+            onDismissRequest = { quickDateColumn = null },
+            confirmButton = {
+                TextButton(onClick = {
+                    val millis = datePickerState.selectedDateMillis
+                    if (millis != null) {
+                        val pickedDate = Date(millis)
+                        val formatted = if (targetCol == schema.lastCallCol) {
+                            val timeNow = SimpleDateFormat("hh:mm a", Locale.ENGLISH)
+                                .format(Date())
+                                .uppercase(Locale.ENGLISH)
+                            val datePart = SimpleDateFormat("dd MMM yyyy", Locale.ENGLISH).format(pickedDate)
+                            "$timeNow, $datePart"
+                        } else {
+                            SimpleDateFormat("dd-MMM-yyyy", Locale.ENGLISH).format(pickedDate)
+                        }
+                        onQuickUpdateField(targetCol, formatted)
+                    }
+                    quickDateColumn = null
+                }) { Text("Save Date", fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = {
+                TextButton(onClick = { quickDateColumn = null }) { Text("Cancel") }
+            }
+        ) {
+            DatePicker(state = datePickerState)
+        }
+    }
+
+    // Instant Quick-Edit Dialog when tapping Extra notes or any text row inside Lead Information!
+    if (quickTextColumn != null) {
+        val targetCol = quickTextColumn!!
+        var draft by remember(targetCol, lead.rowIndex) {
+            mutableStateOf(lead.fields[targetCol].orEmpty())
+        }
+        AlertDialog(
+            onDismissRequest = { quickTextColumn = null },
+            title = { Text("Edit $targetCol") },
+            text = {
+                OutlinedTextField(
+                    value = draft,
+                    onValueChange = { draft = it },
+                    minLines = 3,
+                    maxLines = 6,
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None),
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp)
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onQuickUpdateField(targetCol, draft)
+                        quickTextColumn = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = BrandBlue)
+                ) { Text("Save") }
+            },
+            dismissButton = {
+                TextButton(onClick = { quickTextColumn = null }) { Text("Cancel") }
+            }
+        )
+    }
 
     Column(
         modifier = Modifier
@@ -1353,27 +1434,34 @@ private fun LeadDetailsPageContent(
             }
         }
 
-        // Dynamic Lead Information Card
+        // Dynamic Lead Information Card — 1-Tap Quick Inline Edit for every editable field!
         Card(
             shape = RoundedCornerShape(14.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
         ) {
             Column(
                 modifier = Modifier.padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    Column {
+                        Text(
+                            text = "Lead Information (Row #${lead.rowIndex})",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Tap any unlocked row to quick-edit",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                     Text(
-                        text = "Lead Information (Row #${lead.rowIndex})",
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "Edit fields",
+                        text = "Edit all",
                         color = BrandBlue,
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.SemiBold,
@@ -1384,38 +1472,98 @@ private fun LeadDetailsPageContent(
                 schema.allHeaders.forEach { header ->
                     val value = lead.fields[header]?.trim().orEmpty()
                     val isLocked = schema.isLockedColumn(header)
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.Top
-                    ) {
+                    val isDate = schema.isDateColumn(header)
+                    val dropdownOptions: List<String>? = when (header) {
+                        schema.statusCol -> state.leadTypeOptions
+                        schema.followUpCol -> state.followUpDropdownOptions
+                        schema.assignedCol -> state.assigneeDropdownOptions
+                        else -> null
+                    }
+                    var rowDropdownOpen by remember(lead.rowIndex, header) { mutableStateOf(false) }
+
+                    Box(modifier = Modifier.fillMaxWidth()) {
                         Row(
-                            modifier = Modifier.width(115.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable(enabled = !isLocked) {
+                                    when {
+                                        isDate -> quickDateColumn = header
+                                        dropdownOptions != null -> rowDropdownOpen = true
+                                        else -> quickTextColumn = header
+                                    }
+                                }
+                                .padding(vertical = 6.dp, horizontal = 4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            if (isLocked) {
-                                Icon(Icons.Default.Lock, "Locked", Modifier.size(12.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Spacer(Modifier.width(4.dp))
+                            Row(
+                                modifier = Modifier.width(114.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                if (isLocked) {
+                                    Icon(Icons.Default.Lock, "Locked", Modifier.size(12.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Spacer(Modifier.width(4.dp))
+                                }
+                                Text(
+                                    text = header,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
                             }
                             Text(
-                                text = header,
+                                text = value.ifBlank { "—" },
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.weight(1f)
                             )
+                            if (!isLocked) {
+                                Spacer(Modifier.width(6.dp))
+                                val actionIcon = when {
+                                    isDate -> Icons.Default.CalendarToday
+                                    dropdownOptions != null -> Icons.Default.ArrowDropDown
+                                    else -> Icons.Default.Edit
+                                }
+                                Icon(
+                                    actionIcon,
+                                    contentDescription = "Quick edit $header",
+                                    tint = BrandBlue.copy(alpha = 0.85f),
+                                    modifier = Modifier.size(if (dropdownOptions != null) 20.dp else 15.dp)
+                                )
+                            }
                         }
-                        Text(
-                            text = value.ifBlank { "—" },
-                            style = MaterialTheme.typography.bodySmall,
-                            fontWeight = FontWeight.Medium,
-                            modifier = Modifier.weight(1f)
-                        )
+
+                        if (dropdownOptions != null) {
+                            DropdownMenu(
+                                expanded = rowDropdownOpen,
+                                onDismissRequest = { rowDropdownOpen = false }
+                            ) {
+                                dropdownOptions.forEach { opt ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                text = opt,
+                                                fontWeight = if (opt.equals(value, ignoreCase = true)) FontWeight.Bold else FontWeight.Normal
+                                            )
+                                        },
+                                        trailingIcon = if (opt.equals(value, ignoreCase = true)) {
+                                            { Icon(Icons.Default.Check, null, tint = BrandBlue) }
+                                        } else null,
+                                        onClick = {
+                                            rowDropdownOpen = false
+                                            onQuickUpdateField(header, opt)
+                                        }
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
 
-        // Add Call Note Card (shows assigned team counts too!)
+        // Add Call Note Card — ONLY Assigned Team Members (no Follow up Date, no Extra notes!)
         Card(
             shape = RoundedCornerShape(14.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -1453,25 +1601,22 @@ private fun LeadDetailsPageContent(
                             style = MaterialTheme.typography.labelSmall,
                             color = CallGreenDarkText.copy(alpha = 0.85f)
                         )
-                        if (!state.isNoteColumnLockedByProfile && schema.noteColumnOptions.isNotEmpty()) {
+                        if (!state.isNoteColumnLockedByProfile && state.callerNoteColumns.isNotEmpty()) {
                             Spacer(Modifier.height(6.dp))
                             FlowRow(
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
-                                schema.noteColumnOptions.forEach { col ->
+                                state.callerNoteColumns.forEach { col ->
                                     val selected = col == state.activeNoteColumn
                                     val count = state.countForAssignee(col)
-                                    val label = if (count > 0 || state.assigneeDropdownOptions.any { it.equals(col, ignoreCase = true) }) {
-                                        "$col ($count)"
-                                    } else col
                                     Surface(
                                         shape = RoundedCornerShape(999.dp),
                                         color = if (selected) CallGreen else Color.White,
                                         modifier = Modifier.clickable { onSelectNoteColumn(col) }
                                     ) {
                                         Text(
-                                            text = label,
+                                            text = "$col ($count)",
                                             color = if (selected) Color.White else CallGreenDarkText,
                                             style = MaterialTheme.typography.labelSmall,
                                             fontWeight = FontWeight.SemiBold,
@@ -1632,6 +1777,7 @@ private fun LeadDetailsPageContent(
 private fun PostCallQuickNoteSheet(
     lead: LeadRow,
     schema: SchemaMapping,
+    callerNoteColumns: List<String>,
     activeNoteColumn: String?,
     isNoteColumnLockedByProfile: Boolean,
     detectedDuration: String,
@@ -1688,11 +1834,11 @@ private fun PostCallQuickNoteSheet(
 
             Spacer(Modifier.height(12.dp))
 
-            if (!isNoteColumnLockedByProfile && schema.noteColumnOptions.isNotEmpty()) {
-                Text("Save note to column:", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+            if (!isNoteColumnLockedByProfile && callerNoteColumns.isNotEmpty()) {
+                Text("Save note to caller:", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(6.dp))
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    schema.noteColumnOptions.forEach { col ->
+                    callerNoteColumns.forEach { col ->
                         FilterChip(
                             selected = col == activeNoteColumn,
                             onClick = { onSelectNoteColumn(col) },
@@ -2082,8 +2228,8 @@ private fun SettingsTabScreen(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Caller Profile Lock (shows all assigned people + counts!)
-            SettingsSectionHeader(Icons.Default.Badge, "Caller Profile Lock (${state.assigneeDropdownOptions.size} team)")
+            // Caller Profile Lock (ONLY real assigned people!)
+            SettingsSectionHeader(Icons.Default.Badge, "Caller Profile Lock (${state.callerProfileOptions.size} callers)")
             Card(
                 shape = RoundedCornerShape(14.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)

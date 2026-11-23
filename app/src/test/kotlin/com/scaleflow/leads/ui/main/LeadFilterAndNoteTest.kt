@@ -147,4 +147,22 @@ class LeadFilterAndNoteTest {
         }
         assertEquals("02:45 PM, 24 Nov 2026", formatLastCallTimestamp(cal.time))
     }
+
+    @Test
+    fun followUpDateAndExtraNotesAreExcludedFromCallersAndDetectedProperly() {
+        val fullHeaders = listOf(
+            "Date", "Last Call", "Name", "Numbers", "Lead Type", "Follow-Ups",
+            "Assined to", "Faizan", "Saurabh", "Arshi", "Follow up Date", "Extra notes"
+        )
+        val fullSchema = SchemaMapping.detect(fullHeaders)
+        assertEquals("Follow-Ups", fullSchema.followUpCol)
+        assertEquals("Follow up Date", fullSchema.followUpDateCol)
+        assertEquals("Extra notes", fullSchema.extraNotesCol)
+        assertTrue(fullSchema.isDateColumn("Follow up Date"))
+        assertTrue(fullSchema.isDateColumn("Date"))
+        assertTrue(fullSchema.isDateColumn("Last Call"))
+        assertFalse(fullSchema.noteColumnOptions.contains("Follow up Date"))
+        assertFalse(fullSchema.noteColumnOptions.contains("Extra notes"))
+        assertEquals(listOf("Faizan", "Saurabh", "Arshi"), fullSchema.noteColumnOptions)
+    }
 }

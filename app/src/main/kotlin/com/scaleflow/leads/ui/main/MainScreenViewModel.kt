@@ -198,8 +198,22 @@ data class LeadsUiState(
             add("Unassigned")
         }
 
+    /**
+     * ONLY real assigned team members (from Assined to dropdown, excluding "Open", "Follow up Date", "Extra notes").
+     */
     val callerProfileOptions: List<String>
-        get() = dedupeIgnoreCase(assigneeDropdownOptions + schema.noteColumnOptions)
+        get() = assigneeDropdownOptions.filter { !it.equals("Open", ignoreCase = true) }
+
+    /**
+     * ONLY note columns belonging to real assigned team members (e.g. Faizan, Saurabh, Arshi).
+     * Strictly excludes Follow up Date, Extra notes, Follow-Ups, etc.
+     */
+    val callerNoteColumns: List<String>
+        get() {
+            val teamNames = callerProfileOptions.map { it.trim().lowercase() }.toSet()
+            val matched = schema.noteColumnOptions.filter { it.trim().lowercase() in teamNames }
+            return matched.ifEmpty { schema.noteColumnOptions }
+        }
 
     val activeCallerName: String
         get() = config.callerProfile.trim().ifBlank { activeNoteColumn ?: "App User" }
@@ -208,21 +222,21 @@ data class LeadsUiState(
         get() {
             val lockedProfile = config.callerProfile.trim()
             if (lockedProfile.isNotBlank()) {
-                val matchedCol = schema.noteColumnOptions.firstOrNull {
+                val matchedCol = callerNoteColumns.firstOrNull {
                     it.trim().equals(lockedProfile, ignoreCase = true)
                 }
                 if (matchedCol != null) return matchedCol
             }
             val saved = config.preferredNoteColumn
-            if (saved.isNotBlank() && saved in schema.noteColumnOptions) return saved
-            return schema.notesCol ?: schema.noteColumnOptions.firstOrNull()
+            if (saved.isNotBlank() && saved in callerNoteColumns) return saved
+            return callerNoteColumns.firstOrNull()
         }
 
     val isNoteColumnLockedByProfile: Boolean
         get() {
             val locked = config.callerProfile.trim()
             if (locked.isBlank()) return false
-            return schema.noteColumnOptions.any { it.trim().equals(locked, ignoreCase = true) }
+            return callerNoteColumns.any { it.trim().equals(locked, ignoreCase = true) }
         }
 
     fun historyForLead(rowIndex: Int): List<HistoryEntry> =
@@ -465,6 +479,9 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
 
     fun refreshLeads(silent: Boolean = false, showToast: Boolean = !silent) {
         val config = _uiState.value.config.copy(selectedSheet = "Leads ")
+        if (!silent) {
+            checkForAppUpdate(silent = true)
+        }
         viewModelScope.launch {
             if (!silent) {
                 _uiState.update { it.copy(isSyncing = true, errorMessage = null) }
@@ -532,7 +549,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         val schema = state.schema
         val lead = state.payload.rows.firstOrNull { it.rowIndex == rowIndex } ?: return
 
-        val safeCol = targetColumn?.takeIf { it in schema.noteColumnOptions } ?: state.activeNoteColumn
+        val safeCol = targetColumn?.takeIf { it in state.callerNoteColumns } ?: state.activeNoteColumn
         val fields = mutableMapOf<String, String>()
 
         if (safeCol != null && noteText.trim().isNotEmpty()) {
