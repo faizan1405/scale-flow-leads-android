@@ -13,6 +13,20 @@ data class LeadRow(
 )
 
 @Serializable
+data class HistoryEntry(
+    val timestamp: String = "",
+    val caller: String = "",
+    val rowIndex: Int = 0,
+    val leadName: String = "",
+    val phone: String = "",
+    val action: String = "",
+    val fieldChanged: String = "",
+    val oldValue: String = "",
+    val newValue: String = "",
+    val callDuration: String = ""
+)
+
+@Serializable
 data class SheetPayload(
     val ok: Boolean = true,
     val error: String? = null,
@@ -20,7 +34,9 @@ data class SheetPayload(
     val sheetName: String = "Leads ",
     val sheetNames: List<String> = listOf("Leads "),
     val headers: List<String> = emptyList(),
+    val dropdownOptions: Map<String, List<String>> = emptyMap(),
     val rows: List<LeadRow> = emptyList(),
+    val history: List<HistoryEntry> = emptyList(),
     val updatedAt: String = ""
 )
 
@@ -36,17 +52,26 @@ data class MutationResponse(
 @Serializable
 data class SyncLogEntry(
     val timestamp: String,
-    val level: String, // "INFO", "OK", "ERROR"
+    val level: String,
     val message: String
 )
 
 @Serializable
 data class PendingSyncOp(
     val id: Long,
+    val type: String = "update", // "update" or "logHistory"
     val sheetName: String,
     val rowIndex: Int,
-    val fields: Map<String, String>,
-    val createdAt: String
+    val caller: String = "App User",
+    val leadName: String = "",
+    val phone: String = "",
+    val fields: Map<String, String> = emptyMap(),
+    val eventAction: String = "",
+    val fieldChanged: String = "",
+    val oldValue: String = "",
+    val newValue: String = "",
+    val callDuration: String = "",
+    val createdAt: String = ""
 )
 
 @Serializable
@@ -63,7 +88,7 @@ data class AppConfig(
     val autoOpenNotesAfterCall: Boolean = true,
     val sortBy: String = "Sheet order",
     val preferredNoteColumn: String = "",
-    val callerProfile: String = "" // Caller Profile Lock (e.g. "Faizan", "Saurabh", or "" for none)
+    val callerProfile: String = ""
 ) {
     val isConnected: Boolean
         get() = scriptUrl.trim().startsWith("https://")
@@ -87,34 +112,13 @@ data class SchemaMapping(
     val dateCol: String?,
     val allHeaders: List<String>
 ) {
-    /**
-     * Columns that are strictly locked (Name & Phone Number) and can only be edited in Google Sheets.
-     */
-    fun isLockedColumn(header: String): Boolean {
-        return header == nameCol || header == phoneCol
-    }
+    fun isLockedColumn(header: String): Boolean = header == nameCol || header == phoneCol
+    fun isDateColumn(header: String): Boolean = header == dateCol || header == lastCallCol
 
-    /**
-     * Date columns that should open a Calendar DatePicker instead of the keyboard.
-     */
-    fun isDateColumn(header: String): Boolean {
-        return header == dateCol || header == lastCallCol
-    }
-
-    /**
-     * Candidate columns for writing call notes — strictly excludes Follow-Ups, locked, and metadata columns.
-     */
     val noteColumnOptions: List<String>
         get() {
             val excluded = setOfNotNull(
-                nameCol,
-                phoneCol,
-                dateCol,
-                lastCallCol,
-                statusCol,
-                followUpCol,
-                assignedCol,
-                websiteCol
+                nameCol, phoneCol, dateCol, lastCallCol, statusCol, followUpCol, assignedCol, websiteCol
             )
             return allHeaders.filter { it !in excluded }
         }
@@ -166,15 +170,8 @@ data class SchemaMapping(
     }
 }
 
-fun LeadRow.displayValue(col: String?): String {
-    if (col == null) return ""
-    return fields[col]?.trim().orEmpty()
-}
-
-fun LeadRow.rawValue(col: String?): String {
-    if (col == null) return ""
-    return fields[col].orEmpty()
-}
+fun LeadRow.displayValue(col: String?): String = if (col == null) "" else fields[col]?.trim().orEmpty()
+fun LeadRow.rawValue(col: String?): String = if (col == null) "" else fields[col].orEmpty()
 
 fun LeadRow.initials(nameCol: String?): String {
     val raw = displayValue(nameCol).ifBlank { "SF" }
@@ -186,18 +183,12 @@ fun LeadRow.initials(nameCol: String?): String {
     }
 }
 
-/**
- * Exact Last Call timestamp format requested: "02:45 PM, 24 Nov 2026" (hh:mm a, dd MMM yyyy).
- */
 fun formatLastCallTimestamp(date: Date = Date()): String {
     val sdf = SimpleDateFormat("hh:mm a, dd MMM yyyy", Locale.ENGLISH)
     val formatted = sdf.format(date)
     return formatted.replace(" am,", " AM,").replace(" pm,", " PM,")
 }
 
-/**
- * Appends a new note on a new line keeping old text, with NO timestamp prefix and exact casing preserved.
- */
 fun appendNotePreservingCase(existing: String, addition: String): String {
     val cleanAddition = addition.trim()
     if (cleanAddition.isEmpty()) return existing

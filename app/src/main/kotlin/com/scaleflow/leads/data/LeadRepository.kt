@@ -56,34 +56,13 @@ class LeadRepository(context: Context) {
         prefs.edit().putString(KEY_PENDING_QUEUE, json.encodeToString(ops)).apply()
     }
 
-    fun enqueuePendingOp(sheetName: String, rowIndex: Int, fields: Map<String, String>): Int {
+    private fun enqueuePendingOp(op: PendingSyncOp): Int {
         val current = loadPendingOps().toMutableList()
-        // Merge with existing pending op for the same sheet + row so queue stays compact & ordered
-        val existingIdx = current.indexOfFirst { it.sheetName == sheetName && it.rowIndex == rowIndex }
-        if (existingIdx != -1) {
-            val existing = current[existingIdx]
-            current[existingIdx] = existing.copy(
-                fields = existing.fields + fields,
-                createdAt = nowIso()
-            )
-        } else {
-            current.add(
-                PendingSyncOp(
-                    id = System.currentTimeMillis(),
-                    sheetName = sheetName,
-                    rowIndex = rowIndex,
-                    fields = fields,
-                    createdAt = nowIso()
-                )
-            )
-        }
+        current.add(op)
         savePendingOps(current)
         return current.size
     }
 
-    /**
-     * Flushes all queued offline edits in order to Google Sheets.
-     */
     suspend fun flushPendingQueue(config: AppConfig): FlushResult {
         val queue = loadPendingOps()
         if (queue.isEmpty() || config.demoMode || !config.isConnected) {
@@ -96,13 +75,38 @@ class LeadRepository(context: Context) {
 
         for (i in queue.indices) {
             val op = queue[i]
-            val res = api.updateRow(
-                scriptUrl = config.scriptUrl,
-                apiKey = config.apiKey,
-                sheetName = op.sheetName,
-                rowIndex = op.rowIndex,
-                fields = op.fields
-            )
+            val res = if (op.type == "logHistory") {
+                api.logHistory(
+                    scriptUrl = config.scriptUrl,
+                    apiKey = config.apiKey,
+                    sheetName = op.sheetName,
+                    entry = HistoryEntry(
+                        timestamp = op.createdAt,
+                        caller = op.caller,
+                        rowIndex = op.rowIndex,
+                        leadName = op.leadName,
+                        phone = op.phone,
+                        action = op.eventAction,
+                        fieldChanged = op.fieldChanged,
+                        oldValue = op.oldValue,
+                        newValue = op.newValue,
+                        callDuration = op.callDuration
+                    )
+                )
+            } else {
+                api.updateRow(
+                    scriptUrl = config.scriptUrl,
+                    apiKey = config.apiKey,
+                    sheetName = op.sheetName,
+                    rowIndex = op.rowIndex,
+                    fields = op.fields,
+                    caller = op.caller,
+                    leadName = op.leadName,
+                    phone = op.phone,
+                    callDuration = op.callDuration
+                )
+            }
+
             if (res.isSuccess) {
                 flushed++
             } else {
@@ -116,49 +120,72 @@ class LeadRepository(context: Context) {
         return FlushResult(flushed, remaining.size, lastError)
     }
 
-    /**
-     * Fetches live leads and overlays any unsynced local offline edits so local work is never overwritten.
-     */
     suspend fun fetchLeads(config: AppConfig): Result<SheetPayload> {
         if (config.demoMode || !config.isConnected) {
             return Result.success(loadCachedPayload() ?: SheetPayload())
         }
         val result = api.fetchSheet(config.scriptUrl, config.apiKey, config.selectedSheet)
         return result.map { remote ->
-            val pending = loadPendingOps().filter { it.sheetName == remote.sheetName }
-            val merged = if (pending.isEmpty()) {
-                remote
+            val pending = loadPendingOps()
+            val pendingUpdates = pending.filter { it.type == "update" && it.sheetName == remote.sheetName }
+            val mergedRows = if (pendingUpdates.isEmpty()) {
+                remote.rows
             } else {
-                val pendingByRow = pending.associateBy { it.rowIndex }
-                remote.copy(
-                    rows = remote.rows.map { row ->
-                        val p = pendingByRow[row.rowIndex]
-                        if (p != null) row.copy(fields = row.fields + p.fields) else row
+                remote.rows.map { row ->
+                    val rowUpdates = pendingUpdates.filter { it.rowIndex == row.rowIndex }
+                    if (rowUpdates.isEmpty()) row else {
+                        val mergedFields = row.fields.toMutableMap()
+                        rowUpdates.forEach { mergedFields.putAll(it.fields) }
+                        row.copy(fields = mergedFields)
                     }
-                )
+                }
             }
+            val merged = remote.copy(rows = mergedRows)
             saveCachedPayload(merged)
             merged
         }
     }
 
-    /**
-     * Updates lead fields immediately if online, or queues cleanly for offline sync if network fails.
-     */
-    suspend fun updateLeadWithOfflineQueue(
+    suspend fun updateLeadWithHistoryAndOfflineQueue(
         config: AppConfig,
         currentPayload: SheetPayload,
         rowIndex: Int,
-        updatedFields: Map<String, String>
+        updatedFields: Map<String, String>,
+        caller: String,
+        leadName: String,
+        phone: String,
+        callDuration: String = ""
     ): SaveOutcome {
-        val mergedRows = currentPayload.rows.map { row ->
-            if (row.rowIndex == rowIndex) {
-                row.copy(fields = row.fields + updatedFields)
-            } else {
-                row
-            }
+        val existingRow = currentPayload.rows.firstOrNull { it.rowIndex == rowIndex }
+        val nowStamp = formatLastCallTimestamp()
+
+        // Create local immutable history entries immediately for instant UI display
+        val newHistoryEntries = updatedFields.entries.mapNotNull { (col, newVal) ->
+            val oldVal = existingRow?.fields?.get(col).orEmpty()
+            if (newVal != oldVal && !col.equals("Last Call", ignoreCase = true)) {
+                HistoryEntry(
+                    timestamp = nowStamp,
+                    caller = caller,
+                    rowIndex = rowIndex,
+                    leadName = leadName,
+                    phone = phone,
+                    action = "Updated",
+                    fieldChanged = col,
+                    oldValue = oldVal,
+                    newValue = newVal,
+                    callDuration = callDuration
+                )
+            } else null
         }
-        val optimistic = currentPayload.copy(rows = mergedRows, updatedAt = nowIso())
+
+        val mergedRows = currentPayload.rows.map { row ->
+            if (row.rowIndex == rowIndex) row.copy(fields = row.fields + updatedFields) else row
+        }
+        val optimistic = currentPayload.copy(
+            rows = mergedRows,
+            history = newHistoryEntries + currentPayload.history,
+            updatedAt = nowIso()
+        )
         saveCachedPayload(optimistic)
 
         if (config.demoMode || !config.isConnected) {
@@ -170,13 +197,81 @@ class LeadRepository(context: Context) {
             apiKey = config.apiKey,
             sheetName = currentPayload.sheetName,
             rowIndex = rowIndex,
-            fields = updatedFields
+            fields = updatedFields,
+            caller = caller,
+            leadName = leadName,
+            phone = phone,
+            callDuration = callDuration
         )
 
         return if (apiResult.isSuccess) {
             SaveOutcome(optimistic, syncedImmediately = true, pendingCount = loadPendingOps().size)
         } else {
-            val count = enqueuePendingOp(currentPayload.sheetName, rowIndex, updatedFields)
+            val count = enqueuePendingOp(
+                PendingSyncOp(
+                    id = System.currentTimeMillis(),
+                    type = "update",
+                    sheetName = currentPayload.sheetName,
+                    rowIndex = rowIndex,
+                    caller = caller,
+                    leadName = leadName,
+                    phone = phone,
+                    fields = updatedFields,
+                    callDuration = callDuration,
+                    createdAt = nowStamp
+                )
+            )
+            SaveOutcome(
+                payload = optimistic,
+                syncedImmediately = false,
+                pendingCount = count,
+                errorDetail = apiResult.exceptionOrNull()?.message
+            )
+        }
+    }
+
+    suspend fun logCallHistoryWithOfflineQueue(
+        config: AppConfig,
+        currentPayload: SheetPayload,
+        entry: HistoryEntry
+    ): SaveOutcome {
+        val optimistic = currentPayload.copy(
+            history = listOf(entry) + currentPayload.history,
+            updatedAt = nowIso()
+        )
+        saveCachedPayload(optimistic)
+
+        if (config.demoMode || !config.isConnected) {
+            return SaveOutcome(optimistic, syncedImmediately = true, pendingCount = loadPendingOps().size)
+        }
+
+        val apiResult = api.logHistory(
+            scriptUrl = config.scriptUrl,
+            apiKey = config.apiKey,
+            sheetName = currentPayload.sheetName,
+            entry = entry
+        )
+
+        return if (apiResult.isSuccess) {
+            SaveOutcome(optimistic, syncedImmediately = true, pendingCount = loadPendingOps().size)
+        } else {
+            val count = enqueuePendingOp(
+                PendingSyncOp(
+                    id = System.currentTimeMillis(),
+                    type = "logHistory",
+                    sheetName = currentPayload.sheetName,
+                    rowIndex = entry.rowIndex,
+                    caller = entry.caller,
+                    leadName = entry.leadName,
+                    phone = entry.phone,
+                    eventAction = entry.action,
+                    fieldChanged = entry.fieldChanged,
+                    oldValue = entry.oldValue,
+                    newValue = entry.newValue,
+                    callDuration = entry.callDuration,
+                    createdAt = entry.timestamp
+                )
+            )
             SaveOutcome(
                 payload = optimistic,
                 syncedImmediately = false,

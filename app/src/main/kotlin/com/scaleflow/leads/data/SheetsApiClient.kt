@@ -52,7 +52,11 @@ class SheetsApiClient {
         apiKey: String,
         sheetName: String,
         rowIndex: Int,
-        fields: Map<String, String>
+        fields: Map<String, String>,
+        caller: String = "App User",
+        leadName: String = "",
+        phone: String = "",
+        callDuration: String = ""
     ): Result<MutationResponse> = withContext(Dispatchers.IO) {
         runCatching {
             val body = buildJsonObject {
@@ -60,6 +64,10 @@ class SheetsApiClient {
                 if (apiKey.isNotBlank()) put("key", JsonPrimitive(apiKey.trim()))
                 if (sheetName.isNotEmpty()) put("sheet", JsonPrimitive(sheetName))
                 put("rowIndex", JsonPrimitive(rowIndex))
+                put("caller", JsonPrimitive(caller))
+                put("leadName", JsonPrimitive(leadName))
+                put("phone", JsonPrimitive(phone))
+                put("callDuration", JsonPrimitive(callDuration))
                 put("fields", JsonObject(fields.mapValues { JsonPrimitive(it.value) }))
             }.toString()
 
@@ -70,52 +78,31 @@ class SheetsApiClient {
         }
     }
 
-    suspend fun appendNote(
+    suspend fun logHistory(
         scriptUrl: String,
         apiKey: String,
         sheetName: String,
-        rowIndex: Int,
-        noteColumn: String?,
-        noteText: String,
-        statusColumn: String?,
-        statusValue: String?
+        entry: HistoryEntry
     ): Result<MutationResponse> = withContext(Dispatchers.IO) {
         runCatching {
             val body = buildJsonObject {
-                put("action", JsonPrimitive("appendNote"))
+                put("action", JsonPrimitive("logHistory"))
                 if (apiKey.isNotBlank()) put("key", JsonPrimitive(apiKey.trim()))
                 if (sheetName.isNotEmpty()) put("sheet", JsonPrimitive(sheetName))
-                put("rowIndex", JsonPrimitive(rowIndex))
-                if (!noteColumn.isNullOrBlank()) put("noteColumn", JsonPrimitive(noteColumn))
-                put("noteText", JsonPrimitive(noteText))
-                if (!statusColumn.isNullOrBlank()) put("statusColumn", JsonPrimitive(statusColumn))
-                if (!statusValue.isNullOrBlank()) put("statusValue", JsonPrimitive(statusValue))
+                put("caller", JsonPrimitive(entry.caller))
+                put("rowIndex", JsonPrimitive(entry.rowIndex))
+                put("leadName", JsonPrimitive(entry.leadName))
+                put("phone", JsonPrimitive(entry.phone))
+                put("eventAction", JsonPrimitive(entry.action))
+                put("fieldChanged", JsonPrimitive(entry.fieldChanged))
+                put("oldValue", JsonPrimitive(entry.oldValue))
+                put("newValue", JsonPrimitive(entry.newValue))
+                put("callDuration", JsonPrimitive(entry.callDuration))
             }.toString()
 
             val responseText = executePostWithAppsScriptRedirect(scriptUrl.trim(), body)
             val parsed = json.decodeFromString<MutationResponse>(responseText)
-            if (!parsed.ok) error(parsed.error ?: "Failed to save call note")
-            parsed
-        }
-    }
-
-    suspend fun appendRow(
-        scriptUrl: String,
-        apiKey: String,
-        sheetName: String,
-        fields: Map<String, String>
-    ): Result<MutationResponse> = withContext(Dispatchers.IO) {
-        runCatching {
-            val body = buildJsonObject {
-                put("action", JsonPrimitive("append"))
-                if (apiKey.isNotBlank()) put("key", JsonPrimitive(apiKey.trim()))
-                if (sheetName.isNotEmpty()) put("sheet", JsonPrimitive(sheetName))
-                put("fields", JsonObject(fields.mapValues { JsonPrimitive(it.value) }))
-            }.toString()
-
-            val responseText = executePostWithAppsScriptRedirect(scriptUrl.trim(), body)
-            val parsed = json.decodeFromString<MutationResponse>(responseText)
-            if (!parsed.ok) error(parsed.error ?: "Failed to add lead")
+            if (!parsed.ok) error(parsed.error ?: "Failed to log history")
             parsed
         }
     }
@@ -124,8 +111,8 @@ class SheetsApiClient {
         val conn = (URL(urlString).openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
             instanceFollowRedirects = false
-            connectTimeout = 15_000
-            readTimeout = 20_000
+            connectTimeout = 12_000
+            readTimeout = 18_000
             setRequestProperty("Accept", "application/json")
         }
         try {
@@ -138,9 +125,7 @@ class SheetsApiClient {
                 }
             }
             val text = readBody(conn, code)
-            if (code !in 200..299) {
-                error("HTTP $code: ${text.take(200)}")
-            }
+            if (code !in 200..299) error("HTTP $code: ${text.take(200)}")
             validateJsonResponse(text)
             return text
         } finally {
@@ -148,17 +133,13 @@ class SheetsApiClient {
         }
     }
 
-    /**
-     * Google Apps Script executes doPost() and returns HTTP 302 redirecting to
-     * script.googleusercontent.com, which must be fetched via GET.
-     */
     private fun executePostWithAppsScriptRedirect(urlString: String, jsonBody: String): String {
         val conn = (URL(urlString).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             doOutput = true
             instanceFollowRedirects = false
-            connectTimeout = 15_000
-            readTimeout = 20_000
+            connectTimeout = 12_000
+            readTimeout = 18_000
             setRequestProperty("Content-Type", "text/plain; charset=utf-8")
             setRequestProperty("Accept", "application/json")
         }
@@ -176,9 +157,7 @@ class SheetsApiClient {
                 }
             }
             val text = readBody(conn, code)
-            if (code !in 200..299) {
-                error("HTTP $code: ${text.take(200)}")
-            }
+            if (code !in 200..299) error("HTTP $code: ${text.take(200)}")
             validateJsonResponse(text)
             return text
         } finally {
@@ -194,7 +173,7 @@ class SheetsApiClient {
     private fun validateJsonResponse(text: String) {
         val trimmed = text.trim()
         if (trimmed.startsWith("<!DOCTYPE", ignoreCase = true) || trimmed.startsWith("<html", ignoreCase = true)) {
-            error("Received an HTML page instead of JSON. Make sure your Apps Script deployment has 'Who has access: Anyone'.")
+            error("Received HTML instead of JSON. Ensure Apps Script deployment has 'Who has access: Anyone'.")
         }
     }
 }

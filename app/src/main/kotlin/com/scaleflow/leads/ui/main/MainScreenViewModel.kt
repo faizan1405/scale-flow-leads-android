@@ -7,6 +7,8 @@ import androidx.lifecycle.viewModelScope
 import com.scaleflow.leads.data.AppConfig
 import com.scaleflow.leads.data.AppUpdater
 import com.scaleflow.leads.data.AvailableUpdate
+import com.scaleflow.leads.data.CallLogHelper
+import com.scaleflow.leads.data.HistoryEntry
 import com.scaleflow.leads.data.LeadRepository
 import com.scaleflow.leads.data.LeadRow
 import com.scaleflow.leads.data.SchemaMapping
@@ -100,7 +102,9 @@ data class LeadsUiState(
     val schema: SchemaMapping = SchemaMapping.detect(emptyList()),
     val activeTab: BottomTab = BottomTab.LEADS,
     val detailLeadRowIndex: Int? = null,
+    val detailOrderedRowIds: List<Int> = emptyList(),
     val postCallLeadRowIndex: Int? = null,
+    val lastDetectedCallDuration: String = "",
     val searchQuery: String = "",
     val selectedStatusFilter: String = "All",
     val selectedAssigneeFilter: String = "All",
@@ -117,22 +121,33 @@ data class LeadsUiState(
     val isCheckingUpdate: Boolean = false,
     val isDownloadingUpdate: Boolean = false,
     val downloadProgress: Float = 0f,
-    val currentVersion: String = "1.3.0",
+    val currentVersion: String = "1.4.0",
     val logs: List<SyncLogEntry> = emptyList()
 ) {
     val detailLead: LeadRow?
         get() = detailLeadRowIndex?.let { idx -> payload.rows.firstOrNull { it.rowIndex == idx } }
 
+    val detailPagerLeads: List<LeadRow>
+        get() {
+            val byId = payload.rows.associateBy { it.rowIndex }
+            val ordered = detailOrderedRowIds.mapNotNull { byId[it] }
+            return ordered.ifEmpty { payload.rows.sortedBy { it.rowIndex } }
+        }
+
     val postCallLead: LeadRow?
         get() = postCallLeadRowIndex?.let { idx -> payload.rows.firstOrNull { it.rowIndex == idx } }
 
+    private fun dropdownFromSheet(colName: String?): List<String> {
+        if (colName == null) return emptyList()
+        return payload.dropdownOptions[colName].orEmpty()
+    }
+
     val leadTypeOptions: List<String>
         get() {
-            val fromSheet = payload.rows
-                .map { it.displayValue(schema.statusCol) }
-                .filter { it.isNotBlank() }
+            val fromValidation = dropdownFromSheet(schema.statusCol)
+            val fromRows = payload.rows.map { it.displayValue(schema.statusCol) }.filter { it.isNotBlank() }
             val defaults = listOf("New", "Contacted", "Qualified", "Proposal sent", "Won", "lost")
-            return dedupeIgnoreCase(fromSheet + defaults)
+            return dedupeIgnoreCase(fromValidation + fromRows + defaults)
         }
 
     val statusFilterOptions: List<String>
@@ -140,24 +155,40 @@ data class LeadsUiState(
 
     val followUpDropdownOptions: List<String>
         get() {
+            val fromValidation = dropdownFromSheet(schema.followUpCol)
             val defaults = listOf("1 done.", "2 done.", "3 done.", "4 done.", "5 done.", "Lost")
-            val fromSheet = payload.rows
-                .map { it.displayValue(schema.followUpCol) }
-                .filter { it.isNotBlank() }
-            return dedupeIgnoreCase(defaults + fromSheet)
+            val fromRows = payload.rows.map { it.displayValue(schema.followUpCol) }.filter { it.isNotBlank() }
+            return dedupeIgnoreCase(fromValidation + defaults + fromRows)
         }
 
     val followUpFilterOptions: List<String>
         get() = listOf("All") + followUpDropdownOptions + listOf("None")
 
+    /**
+     * Merges Google Sheet Data Validation dropdown options (e.g. Arshi, Faizan, Saurabh, Open)
+     * with existing cell values so newly added people appear immediately on Refresh!
+     */
     val assigneeDropdownOptions: List<String>
         get() {
-            val fromSheet = payload.rows
-                .map { it.displayValue(schema.assignedCol) }
-                .filter { it.isNotBlank() }
-            val defaults = listOf("Faizan", "Saurabh", "Open")
-            return dedupeIgnoreCase(fromSheet + defaults)
+            val fromValidation = dropdownFromSheet(schema.assignedCol)
+            val fromRows = payload.rows.map { it.displayValue(schema.assignedCol) }.filter { it.isNotBlank() }
+            val defaults = listOf("Arshi", "Faizan", "Saurabh", "Open")
+            return dedupeIgnoreCase(fromValidation + fromRows + defaults)
         }
+
+    /**
+     * Live lead counts for each assigned person (plus Unassigned & All).
+     */
+    fun countForAssignee(person: String): Int = when (person) {
+        "All" -> payload.rows.size
+        "My Leads" -> if (config.callerProfile.isBlank()) 0 else payload.rows.count {
+            it.displayValue(schema.assignedCol).equals(config.callerProfile.trim(), ignoreCase = true)
+        }
+        "Unassigned" -> payload.rows.count { it.displayValue(schema.assignedCol).isBlank() }
+        else -> payload.rows.count {
+            it.displayValue(schema.assignedCol).equals(person.trim(), ignoreCase = true)
+        }
+    }
 
     val assigneeFilterOptions: List<String>
         get() = buildList {
@@ -168,14 +199,11 @@ data class LeadsUiState(
         }
 
     val callerProfileOptions: List<String>
-        get() = dedupeIgnoreCase(schema.noteColumnOptions + assigneeDropdownOptions)
+        get() = dedupeIgnoreCase(assigneeDropdownOptions + schema.noteColumnOptions)
 
-    /**
-     * Resolves which note column to write into:
-     * 1. Caller Profile Lock (if locked to a profile that matches a real note column)
-     * 2. User's last picked note column
-     * 3. Default detected note column (strictly never Follow-Ups)
-     */
+    val activeCallerName: String
+        get() = config.callerProfile.trim().ifBlank { activeNoteColumn ?: "App User" }
+
     val activeNoteColumn: String?
         get() {
             val lockedProfile = config.callerProfile.trim()
@@ -186,9 +214,7 @@ data class LeadsUiState(
                 if (matchedCol != null) return matchedCol
             }
             val saved = config.preferredNoteColumn
-            if (saved.isNotBlank() && saved in schema.noteColumnOptions) {
-                return saved
-            }
+            if (saved.isNotBlank() && saved in schema.noteColumnOptions) return saved
             return schema.notesCol ?: schema.noteColumnOptions.firstOrNull()
         }
 
@@ -198,6 +224,9 @@ data class LeadsUiState(
             if (locked.isBlank()) return false
             return schema.noteColumnOptions.any { it.trim().equals(locked, ignoreCase = true) }
         }
+
+    fun historyForLead(rowIndex: Int): List<HistoryEntry> =
+        payload.history.filter { it.rowIndex == rowIndex }
 
     val filteredLeads: List<LeadRow>
         get() = LeadFilterEngine.filterAndSort(
@@ -260,13 +289,17 @@ data class LeadsUiState(
 
 class MainScreenViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val repository = LeadRepository(application.applicationContext)
-    private val updater = AppUpdater(application.applicationContext)
+    private val appContext = application.applicationContext
+    private val repository = LeadRepository(appContext)
+    private val updater = AppUpdater(appContext)
     private val _uiState = MutableStateFlow(LeadsUiState())
     val uiState: StateFlow<LeadsUiState> = _uiState.asStateFlow()
 
     private var autoSyncJob: Job? = null
     private var pendingCallRowIndex: Int? = null
+    private var pendingCallPhone: String = ""
+    private var pendingCallLeadName: String = ""
+    private var pendingCallStartedAt: Long = 0L
     private var isForeground: Boolean = true
 
     init {
@@ -287,27 +320,68 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         }
 
         addLog("INFO", "App started v${updater.currentVersionName()} (pending offline: $pendingCount)")
-        refreshLeads(silent = false)
+        refreshLeads(silent = false, showToast = false)
         startAutoSyncLoop()
         checkForAppUpdate(silent = true)
+    }
+
+    fun onCallLogPermissionResult(granted: Boolean) {
+        addLog("INFO", if (granted) "Call Log permission granted (exact duration active)" else "Call Log permission denied (using approx timer)")
     }
 
     fun onAppResumed() {
         isForeground = true
         val calledRowIdx = pendingCallRowIndex
         if (calledRowIdx != null) {
+            val phone = pendingCallPhone
+            val name = pendingCallLeadName
+            val startedAt = pendingCallStartedAt
             pendingCallRowIndex = null
-            if (_uiState.value.config.autoOpenNotesAfterCall) {
-                _uiState.update { it.copy(postCallLeadRowIndex = calledRowIdx) }
+
+            // Wait briefly for Android to commit CallLog entry, then read exact talk duration and log to History!
+            viewModelScope.launch {
+                delay(450L)
+                val duration = CallLogHelper.findRecentCallDuration(appContext, phone, startedAt)
+                logCompletedCall(calledRowIdx, name, phone, duration)
+                _uiState.update {
+                    it.copy(
+                        lastDetectedCallDuration = duration,
+                        postCallLeadRowIndex = if (it.config.autoOpenNotesAfterCall) calledRowIdx else it.postCallLeadRowIndex
+                    )
+                }
             }
         }
         if (_uiState.value.config.isConnected && !_uiState.value.config.demoMode) {
-            refreshLeads(silent = true)
+            refreshLeads(silent = true, showToast = false)
         }
     }
 
     fun onAppPaused() {
         isForeground = false
+    }
+
+    private suspend fun logCompletedCall(rowIndex: Int, leadName: String, phone: String, duration: String) {
+        val state = _uiState.value
+        val entry = HistoryEntry(
+            timestamp = formatLastCallTimestamp(),
+            caller = state.activeCallerName,
+            rowIndex = rowIndex,
+            leadName = leadName,
+            phone = phone,
+            action = "Call",
+            fieldChanged = "Phone Call",
+            oldValue = "",
+            newValue = "Talked: $duration",
+            callDuration = duration
+        )
+        val outcome = repository.logCallHistoryWithOfflineQueue(state.config, state.payload, entry)
+        addLog("OK", "Logged call #$rowIndex ($duration)")
+        _uiState.update {
+            it.copy(
+                payload = outcome.payload,
+                pendingSyncCount = outcome.pendingCount
+            )
+        }
     }
 
     fun selectBottomTab(tab: BottomTab) {
@@ -320,17 +394,32 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    fun openLeadDetails(rowIndex: Int) = _uiState.update {
-        it.copy(detailLeadRowIndex = rowIndex, postCallLeadRowIndex = null)
+    fun openLeadDetails(rowIndex: Int, orderedRowIds: List<Int>) = _uiState.update {
+        it.copy(
+            detailLeadRowIndex = rowIndex,
+            detailOrderedRowIds = orderedRowIds,
+            postCallLeadRowIndex = null
+        )
+    }
+
+    fun onDetailPagerPageChanged(rowIndex: Int) = _uiState.update {
+        it.copy(detailLeadRowIndex = rowIndex)
     }
 
     fun closeLeadDetails() = _uiState.update { it.copy(detailLeadRowIndex = null) }
-    fun openPostCallNote(rowIndex: Int) = _uiState.update { it.copy(postCallLeadRowIndex = rowIndex) }
-    fun closePostCallNote() = _uiState.update { it.copy(postCallLeadRowIndex = null) }
+    fun openPostCallNote(rowIndex: Int) = _uiState.update {
+        it.copy(postCallLeadRowIndex = rowIndex, lastDetectedCallDuration = "")
+    }
+    fun closePostCallNote() = _uiState.update {
+        it.copy(postCallLeadRowIndex = null, lastDetectedCallDuration = "")
+    }
 
-    fun markLeadCalled(rowIndex: Int) {
-        pendingCallRowIndex = rowIndex
-        addLog("INFO", "Dialed lead #$rowIndex")
+    fun markLeadCalled(lead: LeadRow) {
+        pendingCallRowIndex = lead.rowIndex
+        pendingCallPhone = lead.displayValue(_uiState.value.schema.phoneCol)
+        pendingCallLeadName = lead.displayValue(_uiState.value.schema.nameCol)
+        pendingCallStartedAt = System.currentTimeMillis()
+        addLog("INFO", "Dialed lead #${lead.rowIndex} ($pendingCallLeadName)")
     }
 
     fun onSearchChanged(query: String) = _uiState.update { it.copy(searchQuery = query) }
@@ -374,22 +463,21 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         _uiState.update { it.copy(config = updated) }
     }
 
-    fun refreshLeads(silent: Boolean = false) {
+    fun refreshLeads(silent: Boolean = false, showToast: Boolean = !silent) {
         val config = _uiState.value.config.copy(selectedSheet = "Leads ")
         viewModelScope.launch {
             if (!silent) {
                 _uiState.update { it.copy(isSyncing = true, errorMessage = null) }
             }
 
-            // First flush any queued offline edits!
             val flush = repository.flushPendingQueue(config)
             if (flush.flushedCount > 0) {
-                addLog("OK", "Flushed ${flush.flushedCount} offline change(s) to Sheet")
+                addLog("OK", "Flushed ${flush.flushedCount} offline item(s) to Sheet")
             }
 
             val result = repository.fetchLeads(config)
             result.onSuccess { payload ->
-                addLog("OK", "Synced ${payload.rows.size} leads from '${payload.sheetName}'")
+                addLog("OK", "Synced ${payload.rows.size} leads + ${payload.history.size} history rows")
                 _uiState.update {
                     it.copy(
                         payload = payload,
@@ -398,27 +486,27 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
                         pendingSyncCount = flush.remainingCount,
                         errorMessage = null,
                         lastSyncedTime = formatShortTime(),
-                        snackbarMessage = if (flush.flushedCount > 0) {
-                            "Synced ${flush.flushedCount} offline edit(s) to Sheet"
-                        } else it.snackbarMessage
+                        snackbarMessage = when {
+                            flush.flushedCount > 0 -> "Synced ${flush.flushedCount} offline edit(s) · ${payload.rows.size} leads"
+                            showToast -> "Refreshed · ${payload.rows.size} leads synced"
+                            else -> it.snackbarMessage
+                        }
                     )
                 }
             }.onFailure { err ->
-                addLog("ERROR", "Sync failed (offline?): ${err.message}")
+                addLog("ERROR", "Sync failed: ${err.message}")
                 _uiState.update {
                     it.copy(
                         isSyncing = false,
                         pendingSyncCount = repository.loadPendingOps().size,
-                        errorMessage = if (silent) it.errorMessage else "Offline — showing saved leads"
+                        errorMessage = if (silent) it.errorMessage else "Offline — showing cached leads",
+                        snackbarMessage = if (showToast) "Could not refresh (offline)" else it.snackbarMessage
                     )
                 }
             }
         }
     }
 
-    /**
-     * Updates Follow-Ups dropdown (1 done. .. 5 done. / Lost) and auto-updates Last Call!
-     */
     fun saveFollowUpChoice(rowIndex: Int, followUpValue: String) {
         val state = _uiState.value
         val followCol = state.schema.followUpCol ?: return
@@ -433,11 +521,6 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         )
     }
 
-    /**
-     * Appends exact user note on a new line (NO timestamp prefix, exact casing preserved)
-     * and AUTOMATICALLY writes current time/date to Column B ("Last Call") in format:
-     * "02:45 PM, 24 Nov 2026".
-     */
     fun saveCallerNote(
         rowIndex: Int,
         targetColumn: String?,
@@ -462,24 +545,30 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         if (schema.followUpCol != null && !newFollowUp.isNullOrBlank()) {
             fields[schema.followUpCol] = newFollowUp.trim()
         }
-
         if (fields.isEmpty()) return
 
-        // Automatically update Column B ("Last Call") in exact format: 02:45 PM, 24 Nov 2026
         if (schema.lastCallCol != null) {
             fields[schema.lastCallCol] = formatLastCallTimestamp()
         }
 
+        val leadName = lead.displayValue(schema.nameCol)
+        val phone = lead.displayValue(schema.phoneCol)
+        val duration = state.lastDetectedCallDuration
+
         viewModelScope.launch {
             _uiState.update { it.copy(isSaving = true) }
-            val outcome = repository.updateLeadWithOfflineQueue(
+            val outcome = repository.updateLeadWithHistoryAndOfflineQueue(
                 config = state.config,
                 currentPayload = state.payload,
                 rowIndex = rowIndex,
-                updatedFields = fields
+                updatedFields = fields,
+                caller = state.activeCallerName,
+                leadName = leadName,
+                phone = phone,
+                callDuration = duration
             )
             if (outcome.syncedImmediately) {
-                addLog("OK", "Saved note to '${safeCol ?: "Sheet"}' + Last Call on #$rowIndex")
+                addLog("OK", "Saved note + history for #$rowIndex")
             } else {
                 addLog("INFO", "Queued offline note for #$rowIndex (${outcome.pendingCount} pending)")
             }
@@ -488,10 +577,11 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
                     payload = outcome.payload,
                     isSaving = false,
                     postCallLeadRowIndex = null,
+                    lastDetectedCallDuration = "",
                     pendingSyncCount = outcome.pendingCount,
                     lastSyncedTime = if (outcome.syncedImmediately) formatShortTime() else it.lastSyncedTime,
                     snackbarMessage = if (outcome.syncedImmediately) {
-                        "Saved to ${safeCol ?: "Sheet"} · Last Call updated"
+                        "Saved to ${safeCol ?: "Sheet"} · History logged"
                     } else {
                         "Saved offline — will auto-sync when online"
                     }
@@ -500,41 +590,44 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    /**
-     * Updates lead fields (strictly locks Name & Numbers, auto-updates Last Call, and queues offline if needed).
-     */
     fun saveLeadEdits(
         rowIndex: Int,
         updatedFields: Map<String, String>,
         closeSheet: Boolean = true,
         autoStampLastCall: Boolean = true,
-        successMsg: String = "Lead synced to Google Sheet"
+        successMsg: String = "Lead synced & logged to History"
     ) {
         val state = _uiState.value
+        val schema = state.schema
         val lead = state.payload.rows.firstOrNull { it.rowIndex == rowIndex }
-        val sanitized = updatedFields.filterKeys { !state.schema.isLockedColumn(it) }.toMutableMap()
+        val sanitized = updatedFields.filterKeys { !schema.isLockedColumn(it) }.toMutableMap()
         if (sanitized.isEmpty()) {
             _uiState.update { it.copy(showEditAllSheet = false) }
             return
         }
 
-        val lastCallCol = state.schema.lastCallCol
+        val lastCallCol = schema.lastCallCol
         if (autoStampLastCall && lastCallCol != null) {
             val prevLastCall = lead?.rawValue(lastCallCol).orEmpty()
             val submittedLastCall = sanitized[lastCallCol]
-            // If user didn't manually pick a different Last Call date, auto-stamp exact current time & date!
             if (submittedLastCall == null || submittedLastCall == prevLastCall) {
                 sanitized[lastCallCol] = formatLastCallTimestamp()
             }
         }
 
+        val leadName = lead?.displayValue(schema.nameCol).orEmpty()
+        val phone = lead?.displayValue(schema.phoneCol).orEmpty()
+
         viewModelScope.launch {
             _uiState.update { it.copy(isSaving = true) }
-            val outcome = repository.updateLeadWithOfflineQueue(
+            val outcome = repository.updateLeadWithHistoryAndOfflineQueue(
                 config = state.config,
                 currentPayload = state.payload,
                 rowIndex = rowIndex,
-                updatedFields = sanitized
+                updatedFields = sanitized,
+                caller = state.activeCallerName,
+                leadName = leadName,
+                phone = phone
             )
             if (outcome.syncedImmediately) {
                 addLog("OK", "Updated #$rowIndex (${sanitized.keys.joinToString()})")
@@ -548,11 +641,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
                     pendingSyncCount = outcome.pendingCount,
                     showEditAllSheet = if (closeSheet) false else it.showEditAllSheet,
                     lastSyncedTime = if (outcome.syncedImmediately) formatShortTime() else it.lastSyncedTime,
-                    snackbarMessage = if (outcome.syncedImmediately) {
-                        successMsg
-                    } else {
-                        "Saved offline — will auto-sync when online"
-                    }
+                    snackbarMessage = if (outcome.syncedImmediately) successMsg else "Saved offline — will auto-sync"
                 )
             }
         }
@@ -615,7 +704,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
                 val s = _uiState.value
                 val editing = s.postCallLeadRowIndex != null || s.showEditAllSheet
                 if (isForeground && !editing && !s.isSaving && s.config.isConnected && !s.config.demoMode) {
-                    refreshLeads(silent = true)
+                    refreshLeads(silent = true, showToast = false)
                 }
             }
         }

@@ -7,6 +7,14 @@ import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -30,6 +38,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -39,6 +49,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.FormatListBulleted
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.Notes
 import androidx.compose.material.icons.automirrored.filled.Sort
@@ -54,6 +65,7 @@ import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Lock
@@ -65,6 +77,7 @@ import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.WorkOutline
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -107,6 +120,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -120,6 +134,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.scaleflow.leads.data.HistoryEntry
 import com.scaleflow.leads.data.LeadRow
 import com.scaleflow.leads.data.SchemaMapping
 import com.scaleflow.leads.data.SyncLogEntry
@@ -136,6 +151,7 @@ import com.scaleflow.leads.ui.theme.StatusBlue
 import com.scaleflow.leads.ui.theme.StatusBlueContainer
 import com.scaleflow.leads.ui.theme.StatusRed
 import com.scaleflow.leads.ui.theme.StatusRedContainer
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -156,74 +172,76 @@ fun MainScreen(viewModel: MainScreenViewModel) {
         }
     }
 
-    BackHandler(enabled = state.detailLead != null) {
+    val isDetailOpen = state.detailLead != null
+    BackHandler(enabled = isDetailOpen) {
         viewModel.closeLeadDetails()
     }
 
-    val detailLead = state.detailLead
-    if (detailLead != null) {
-        LeadDetailsScreen(
-            lead = detailLead,
-            schema = state.schema,
-            activeNoteColumn = state.activeNoteColumn,
-            isNoteColumnLockedByProfile = state.isNoteColumnLockedByProfile,
-            callerProfile = state.config.callerProfile,
-            followUpOptions = state.followUpDropdownOptions,
-            isSaving = state.isSaving,
-            pendingSyncCount = state.pendingSyncCount,
-            snackbarHostState = snackbarHostState,
-            onBack = { viewModel.closeLeadDetails() },
-            onCall = {
-                val phone = detailLead.displayValue(state.schema.phoneCol)
-                if (phone.isNotBlank()) {
-                    viewModel.markLeadCalled(detailLead.rowIndex)
-                    launchDialer(context, phone)
-                }
-            },
-            onWhatsAppFollowUp = {
-                val phone = detailLead.displayValue(state.schema.phoneCol)
-                val name = detailLead.displayValue(state.schema.nameCol)
-                launchWhatsApp(context, phone, state.config.followUpWhatsAppMessage, name)
-            },
-            onWhatsAppPortfolio = {
-                val phone = detailLead.displayValue(state.schema.phoneCol)
-                val name = detailLead.displayValue(state.schema.nameCol)
-                launchWhatsApp(context, phone, state.config.portfolioWhatsAppMessage, name)
-            },
-            onSelectFollowUp = { choice ->
-                viewModel.saveFollowUpChoice(detailLead.rowIndex, choice)
-            },
-            onCopyPhone = { phone -> copyToClipboard(context, phone) },
-            onSelectNoteColumn = { col -> viewModel.updatePreferredNoteColumn(col) },
-            onSaveCallerNote = { col, note -> viewModel.saveCallerNote(detailLead.rowIndex, col, note) },
-            onOpenEditAll = { viewModel.openEditAllSheet() }
-        )
-    } else {
-        HomeScaffold(
-            state = state,
-            snackbarHostState = snackbarHostState,
-            viewModel = viewModel,
-            onCallLead = { lead ->
-                val phone = lead.displayValue(state.schema.phoneCol)
-                if (phone.isNotBlank()) {
-                    viewModel.markLeadCalled(lead.rowIndex)
-                    launchDialer(context, phone)
-                }
-            },
-            onWhatsAppFollowUp = { lead ->
-                val phone = lead.displayValue(state.schema.phoneCol)
-                val name = lead.displayValue(state.schema.nameCol)
-                launchWhatsApp(context, phone, state.config.followUpWhatsAppMessage, name)
-            },
-            onWhatsAppPortfolio = { lead ->
-                val phone = lead.displayValue(state.schema.phoneCol)
-                val name = lead.displayValue(state.schema.nameCol)
-                launchWhatsApp(context, phone, state.config.portfolioWhatsAppMessage, name)
+    // Smooth animated transition between Home list and Instagram-style Swipable Lead Details!
+    AnimatedContent(
+        targetState = isDetailOpen,
+        transitionSpec = {
+            if (targetState) {
+                (slideInHorizontally(tween(240)) { it / 3 } + fadeIn(tween(220))) togetherWith
+                    (slideOutHorizontally(tween(240)) { -it / 4 } + fadeOut(tween(180)))
+            } else {
+                (slideInHorizontally(tween(240)) { -it / 4 } + fadeIn(tween(220))) togetherWith
+                    (slideOutHorizontally(tween(240)) { it / 3 } + fadeOut(tween(180)))
             }
-        )
+        },
+        label = "MainDetailTransition"
+    ) { showDetail ->
+        if (showDetail && state.detailLead != null) {
+            SwipableLeadDetailsScreen(
+                state = state,
+                snackbarHostState = snackbarHostState,
+                viewModel = viewModel,
+                onCall = { lead ->
+                    val phone = lead.displayValue(state.schema.phoneCol)
+                    if (phone.isNotBlank()) {
+                        viewModel.markLeadCalled(lead)
+                        launchDialer(context, phone)
+                    }
+                },
+                onWhatsAppFollowUp = { lead ->
+                    val phone = lead.displayValue(state.schema.phoneCol)
+                    val name = lead.displayValue(state.schema.nameCol)
+                    launchWhatsApp(context, phone, state.config.followUpWhatsAppMessage, name)
+                },
+                onWhatsAppPortfolio = { lead ->
+                    val phone = lead.displayValue(state.schema.phoneCol)
+                    val name = lead.displayValue(state.schema.nameCol)
+                    launchWhatsApp(context, phone, state.config.portfolioWhatsAppMessage, name)
+                },
+                onCopyPhone = { phone -> copyToClipboard(context, phone) }
+            )
+        } else {
+            HomeScaffold(
+                state = state,
+                snackbarHostState = snackbarHostState,
+                viewModel = viewModel,
+                onCallLead = { lead ->
+                    val phone = lead.displayValue(state.schema.phoneCol)
+                    if (phone.isNotBlank()) {
+                        viewModel.markLeadCalled(lead)
+                        launchDialer(context, phone)
+                    }
+                },
+                onWhatsAppFollowUp = { lead ->
+                    val phone = lead.displayValue(state.schema.phoneCol)
+                    val name = lead.displayValue(state.schema.nameCol)
+                    launchWhatsApp(context, phone, state.config.followUpWhatsAppMessage, name)
+                },
+                onWhatsAppPortfolio = { lead ->
+                    val phone = lead.displayValue(state.schema.phoneCol)
+                    val name = lead.displayValue(state.schema.nameCol)
+                    launchWhatsApp(context, phone, state.config.portfolioWhatsAppMessage, name)
+                }
+            )
+        }
     }
 
-    // Post-Call Quick Note Bottom Sheet (auto-opens after call ends)
+    // Post-Call Quick Note Sheet (auto-opens after call ends with detected call talk duration!)
     val postCallLead = state.postCallLead
     if (postCallLead != null) {
         PostCallQuickNoteSheet(
@@ -231,6 +249,7 @@ fun MainScreen(viewModel: MainScreenViewModel) {
             schema = state.schema,
             activeNoteColumn = state.activeNoteColumn,
             isNoteColumnLockedByProfile = state.isNoteColumnLockedByProfile,
+            detectedDuration = state.lastDetectedCallDuration,
             statusOptions = state.leadTypeOptions,
             followUpOptions = state.followUpDropdownOptions,
             isSaving = state.isSaving,
@@ -242,17 +261,18 @@ fun MainScreen(viewModel: MainScreenViewModel) {
         )
     }
 
-    // Edit Lead Details Sheet with Smart Pickers (Calendar for Dates, Dropdowns for Type/Follow-Ups/Assigned, Locked Name & Number!)
-    if (state.showEditAllSheet && detailLead != null) {
+    // Edit Lead Details Sheet with Smart Pickers
+    val currentDetailLead = state.detailLead
+    if (state.showEditAllSheet && currentDetailLead != null) {
         EditEditableFieldsSheet(
             schema = state.schema,
-            initialFields = detailLead.fields,
+            initialFields = currentDetailLead.fields,
             leadTypeOptions = state.leadTypeOptions,
             followUpOptions = state.followUpDropdownOptions,
             assigneeOptions = state.assigneeDropdownOptions,
             isSaving = state.isSaving,
             onDismiss = { viewModel.dismissEditAllSheet() },
-            onSave = { viewModel.saveLeadEdits(detailLead.rowIndex, it) }
+            onSave = { viewModel.saveLeadEdits(currentDetailLead.rowIndex, it) }
         )
     }
 
@@ -408,13 +428,11 @@ private fun LeadsListTab(
         state.selectedAssigneeFilter != "All" ||
         state.selectedFollowUpFilter != "All"
 
+    val orderedIds = remember(leads) { leads.map { it.rowIndex } }
+
     Column(modifier = Modifier.fillMaxSize()) {
-        Surface(
-            color = MaterialTheme.colorScheme.surface,
-            shadowElevation = 0.5.dp
-        ) {
+        Surface(color = MaterialTheme.colorScheme.surface, shadowElevation = 0.5.dp) {
             Column {
-                // Header
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -430,12 +448,7 @@ private fun LeadsListTab(
                                 .background(BrandBlue),
                             contentAlignment = Alignment.Center
                         ) {
-                            Icon(
-                                Icons.Default.Call,
-                                contentDescription = null,
-                                tint = Color.White,
-                                modifier = Modifier.size(20.dp)
-                            )
+                            Icon(Icons.Default.Call, null, tint = Color.White, modifier = Modifier.size(20.dp))
                         }
                         Spacer(Modifier.width(10.dp))
                         Column {
@@ -465,7 +478,7 @@ private fun LeadsListTab(
                                 } else ""
                                 Text(
                                     text = if (state.isSyncing) {
-                                        "Syncing Leads tab..."
+                                        "Syncing live Sheet..."
                                     } else {
                                         "Leads tab · ${leads.size} shown$profileLabel"
                                     },
@@ -476,17 +489,17 @@ private fun LeadsListTab(
                         }
                     }
 
-                    IconButton(onClick = { viewModel.refreshLeads(silent = false) }) {
+                    IconButton(onClick = { viewModel.refreshLeads(silent = false, showToast = true) }) {
                         if (state.isSyncing) {
                             CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                         } else {
-                            Icon(Icons.Default.Refresh, contentDescription = "Sync now")
+                            Icon(Icons.Default.Refresh, contentDescription = "Refresh now")
                         }
                     }
                 }
 
-                // Offline Pending Sync Queue Banner
-                if (state.pendingSyncCount > 0) {
+                // Animated Offline Queue Banner
+                AnimatedVisibility(visible = state.pendingSyncCount > 0) {
                     Surface(color = StatusAmberContainer, modifier = Modifier.fillMaxWidth()) {
                         Row(
                             modifier = Modifier
@@ -513,7 +526,7 @@ private fun LeadsListTab(
                                 color = BrandBlue,
                                 style = MaterialTheme.typography.labelLarge,
                                 fontWeight = FontWeight.Bold,
-                                modifier = Modifier.clickable { viewModel.refreshLeads(silent = false) }
+                                modifier = Modifier.clickable { viewModel.refreshLeads(silent = false, showToast = true) }
                             )
                         }
                     }
@@ -521,51 +534,42 @@ private fun LeadsListTab(
 
                 // Auto-Update Banner
                 val update = state.availableUpdate
-                if (update != null) {
-                    Surface(color = CallGreenContainer, modifier = Modifier.fillMaxWidth()) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                text = if (state.isDownloadingUpdate) {
-                                    "Downloading v${update.version} (${(state.downloadProgress * 100).toInt()}%)..."
-                                } else {
-                                    "Update v${update.version} ready"
-                                },
-                                color = CallGreenDarkText,
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier.weight(1f)
-                            )
-                            Button(
-                                onClick = { viewModel.downloadAndInstallUpdate() },
-                                enabled = !state.isDownloadingUpdate,
-                                colors = ButtonDefaults.buttonColors(containerColor = CallGreen),
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                                modifier = Modifier.height(32.dp)
+                AnimatedVisibility(visible = update != null) {
+                    if (update != null) {
+                        Surface(color = CallGreenContainer, modifier = Modifier.fillMaxWidth()) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Text("Update", fontSize = 12.sp)
+                                Text(
+                                    text = if (state.isDownloadingUpdate) {
+                                        "Downloading v${update.version} (${(state.downloadProgress * 100).toInt()}%)..."
+                                    } else {
+                                        "Update v${update.version} ready"
+                                    },
+                                    color = CallGreenDarkText,
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Button(
+                                    onClick = { viewModel.downloadAndInstallUpdate() },
+                                    enabled = !state.isDownloadingUpdate,
+                                    colors = ButtonDefaults.buttonColors(containerColor = CallGreen),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                    modifier = Modifier.height(32.dp)
+                                ) {
+                                    Text("Update", fontSize = 12.sp)
+                                }
                             }
                         }
                     }
                 }
 
-                if (state.errorMessage != null && state.pendingSyncCount == 0) {
-                    Surface(color = StatusRedContainer, modifier = Modifier.fillMaxWidth()) {
-                        Text(
-                            text = state.errorMessage,
-                            color = StatusRed,
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
-                        )
-                    }
-                }
-
-                // Search bar (matches #row, Name, Phone, Notes, Assigned, Status)
+                // Search bar
                 OutlinedTextField(
                     value = state.searchQuery,
                     onValueChange = { viewModel.onSearchChanged(it) },
@@ -585,19 +589,22 @@ private fun LeadsListTab(
                     shape = RoundedCornerShape(14.dp)
                 )
 
-                // Combined Filter & Sort Row: Assigned | Follow-up | Sort | Clear
+                // Combined Filter & Sort Row: Assigned (with live counts!) | Follow-up | Sort | Clear
                 LazyRow(
                     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Assigned filter dropdown
                     item {
                         Box {
                             val active = state.selectedAssigneeFilter != "All"
                             FilterDropdownPill(
                                 icon = Icons.Default.FilterList,
-                                label = if (active) "Assigned: ${state.selectedAssigneeFilter}" else "Assigned: All",
+                                label = if (active) {
+                                    "Assigned: ${state.selectedAssigneeFilter} (${state.countForAssignee(state.selectedAssigneeFilter)})"
+                                } else {
+                                    "Assigned: All (${state.payload.rows.size})"
+                                },
                                 active = active,
                                 onClick = { assigneeMenuOpen = true }
                             )
@@ -606,14 +613,15 @@ private fun LeadsListTab(
                                 onDismissRequest = { assigneeMenuOpen = false }
                             ) {
                                 state.assigneeFilterOptions.forEach { person ->
+                                    val count = state.countForAssignee(person)
                                     DropdownMenuItem(
                                         text = {
                                             Text(
                                                 text = when (person) {
-                                                    "All" -> "All Assignees"
-                                                    "My Leads" -> "My Leads (${state.config.callerProfile})"
-                                                    "Unassigned" -> "Unassigned Only"
-                                                    else -> "Only $person"
+                                                    "All" -> "All Assignees ($count)"
+                                                    "My Leads" -> "My Leads · ${state.config.callerProfile} ($count)"
+                                                    "Unassigned" -> "Unassigned ($count)"
+                                                    else -> "$person ($count)"
                                                 },
                                                 fontWeight = if (person == state.selectedAssigneeFilter) FontWeight.Bold else FontWeight.Normal
                                             )
@@ -631,7 +639,6 @@ private fun LeadsListTab(
                         }
                     }
 
-                    // Follow-Up count filter dropdown (1 done. .. 5 done. / Lost / None)
                     item {
                         Box {
                             val active = state.selectedFollowUpFilter != "All"
@@ -666,7 +673,6 @@ private fun LeadsListTab(
                         }
                     }
 
-                    // Sort dropdown
                     item {
                         Box {
                             FilterDropdownPill(
@@ -710,7 +716,7 @@ private fun LeadsListTab(
                     }
                 }
 
-                // Lead Type chips (combine cleanly with Search + Assigned + Follow-Up!)
+                // Lead Type chips
                 LazyRow(
                     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -735,10 +741,9 @@ private fun LeadsListTab(
             }
         }
 
-        // Pull-to-Refresh Lead Cards
         PullToRefreshBox(
             isRefreshing = state.isSyncing,
-            onRefresh = { viewModel.refreshLeads(silent = false) },
+            onRefresh = { viewModel.refreshLeads(silent = false, showToast = true) },
             modifier = Modifier.fillMaxSize()
         ) {
             if (leads.isEmpty()) {
@@ -764,19 +769,15 @@ private fun LeadsListTab(
                 }
             } else {
                 LazyColumn(
-                    contentPadding = PaddingValues(
-                        start = 14.dp,
-                        end = 14.dp,
-                        top = 10.dp,
-                        bottom = 24.dp
-                    ),
+                    contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 10.dp, bottom = 24.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     items(leads, key = { it.rowIndex }) { lead ->
                         LeadListCard(
                             lead = lead,
                             schema = state.schema,
-                            onClick = { viewModel.openLeadDetails(lead.rowIndex) },
+                            modifier = Modifier.animateItem(),
+                            onClick = { viewModel.openLeadDetails(lead.rowIndex, orderedIds) },
                             onCall = { onCall(lead) },
                             onWhatsAppFollowUp = { onWhatsAppFollowUp(lead) },
                             onWhatsAppPortfolio = { onWhatsAppPortfolio(lead) },
@@ -828,6 +829,7 @@ private fun FilterDropdownPill(
 private fun LeadListCard(
     lead: LeadRow,
     schema: SchemaMapping,
+    modifier: Modifier = Modifier,
     onClick: () -> Unit,
     onCall: () -> Unit,
     onWhatsAppFollowUp: () -> Unit,
@@ -845,7 +847,7 @@ private fun LeadListCard(
     val (accentColor, badgeBg, badgeFg) = statusPalette(badgeText)
 
     Card(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .clickable { onClick() },
         shape = RoundedCornerShape(14.dp),
@@ -878,11 +880,7 @@ private fun LeadListCard(
                         modifier = Modifier.weight(1f),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        // Exact Google Sheet Row Number Badge (#2, #3, #4...)
-                        Surface(
-                            color = BrandBlueContainer,
-                            shape = RoundedCornerShape(6.dp)
-                        ) {
+                        Surface(color = BrandBlueContainer, shape = RoundedCornerShape(6.dp)) {
                             Text(
                                 text = "#${lead.rowIndex}",
                                 color = BrandBlue,
@@ -1035,21 +1033,135 @@ private fun LeadListCard(
 }
 
 // ============================================================================
-// LEAD DETAILS SCREEN
+// INSTAGRAM-STYLE SWIPABLE LEAD DETAILS (HorizontalPager + Read-Only History!)
+// Drag right-to-left -> next lead (#2 -> #3 -> #4)
+// Drag left-to-right -> previous lead (#4 -> #3 -> #2)
 // ============================================================================
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun LeadDetailsScreen(
-    lead: LeadRow,
-    schema: SchemaMapping,
-    activeNoteColumn: String?,
-    isNoteColumnLockedByProfile: Boolean,
-    callerProfile: String,
-    followUpOptions: List<String>,
-    isSaving: Boolean,
-    pendingSyncCount: Int,
+private fun SwipableLeadDetailsScreen(
+    state: LeadsUiState,
     snackbarHostState: SnackbarHostState,
-    onBack: () -> Unit,
+    viewModel: MainScreenViewModel,
+    onCall: (LeadRow) -> Unit,
+    onWhatsAppFollowUp: (LeadRow) -> Unit,
+    onWhatsAppPortfolio: (LeadRow) -> Unit,
+    onCopyPhone: (String) -> Unit
+) {
+    val pagerLeads = state.detailPagerLeads
+    val initialIndex = remember(pagerLeads.size) {
+        pagerLeads.indexOfFirst { it.rowIndex == state.detailLeadRowIndex }.coerceAtLeast(0)
+    }
+    val pagerState = rememberPagerState(
+        initialPage = initialIndex,
+        pageCount = { pagerLeads.size.coerceAtLeast(1) }
+    )
+    val coroutineScope = rememberCoroutineScope()
+
+    LaunchedEffect(pagerState.currentPage, pagerLeads) {
+        val current = pagerLeads.getOrNull(pagerState.currentPage)
+        if (current != null && current.rowIndex != state.detailLeadRowIndex) {
+            viewModel.onDetailPagerPageChanged(current.rowIndex)
+        }
+    }
+
+    val activeLead = pagerLeads.getOrNull(pagerState.currentPage) ?: state.detailLead ?: return
+
+    Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
+        containerColor = MaterialTheme.colorScheme.background,
+        topBar = {
+            TopAppBar(
+                title = {
+                    Column {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Lead #${activeLead.rowIndex}", fontWeight = FontWeight.Bold)
+                            if (state.pendingSyncCount > 0) {
+                                Spacer(Modifier.width(8.dp))
+                                Surface(color = StatusAmberContainer, shape = RoundedCornerShape(999.dp)) {
+                                    Text(
+                                        text = "Offline (${state.pendingSyncCount})",
+                                        color = StatusAmber,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                        }
+                        Text(
+                            text = "${pagerState.currentPage + 1} of ${pagerLeads.size} · Swipe ↔ for next lead",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                },
+                navigationIcon = {
+                    IconButton(onClick = { viewModel.closeLeadDetails() }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    IconButton(
+                        onClick = {
+                            if (pagerState.currentPage > 0) {
+                                coroutineScope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) }
+                            }
+                        },
+                        enabled = pagerState.currentPage > 0
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "Previous Lead")
+                    }
+                    IconButton(
+                        onClick = {
+                            if (pagerState.currentPage < pagerLeads.lastIndex) {
+                                coroutineScope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) }
+                            }
+                        },
+                        enabled = pagerState.currentPage < pagerLeads.lastIndex
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Next Lead")
+                    }
+                    TextButton(onClick = { viewModel.openEditAllSheet() }) {
+                        Icon(Icons.Default.Edit, null, Modifier.size(16.dp))
+                        Spacer(Modifier.width(3.dp))
+                        Text("Edit", fontWeight = FontWeight.SemiBold)
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
+            )
+        }
+    ) { innerPadding ->
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+        ) { page ->
+            val lead = pagerLeads.getOrNull(page) ?: return@HorizontalPager
+            LeadDetailsPageContent(
+                lead = lead,
+                state = state,
+                historyEntries = state.historyForLead(lead.rowIndex),
+                onCall = { onCall(lead) },
+                onWhatsAppFollowUp = { onWhatsAppFollowUp(lead) },
+                onWhatsAppPortfolio = { onWhatsAppPortfolio(lead) },
+                onSelectFollowUp = { choice -> viewModel.saveFollowUpChoice(lead.rowIndex, choice) },
+                onCopyPhone = onCopyPhone,
+                onSelectNoteColumn = { col -> viewModel.updatePreferredNoteColumn(col) },
+                onSaveCallerNote = { col, note -> viewModel.saveCallerNote(lead.rowIndex, col, note) },
+                onOpenEditAll = { viewModel.openEditAllSheet() }
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun LeadDetailsPageContent(
+    lead: LeadRow,
+    state: LeadsUiState,
+    historyEntries: List<HistoryEntry>,
     onCall: () -> Unit,
     onWhatsAppFollowUp: () -> Unit,
     onWhatsAppPortfolio: () -> Unit,
@@ -1059,6 +1171,7 @@ private fun LeadDetailsScreen(
     onSaveCallerNote: (targetColumn: String?, note: String) -> Unit,
     onOpenEditAll: () -> Unit
 ) {
+    val schema = state.schema
     val name = lead.displayValue(schema.nameCol).ifBlank { "Row #${lead.rowIndex}" }
     val phone = lead.displayValue(schema.phoneCol)
     val leadType = lead.displayValue(schema.statusCol)
@@ -1068,396 +1181,451 @@ private fun LeadDetailsScreen(
     var followUpDropdownExpanded by remember { mutableStateOf(false) }
     val (_, badgeBg, badgeFg) = statusPalette(leadType)
 
-    Scaffold(
-        snackbarHost = { SnackbarHost(snackbarHostState) },
-        containerColor = MaterialTheme.colorScheme.background,
-        topBar = {
-            TopAppBar(
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Lead #${lead.rowIndex}", fontWeight = FontWeight.Bold)
-                        if (pendingSyncCount > 0) {
-                            Spacer(Modifier.width(8.dp))
-                            Surface(color = StatusAmberContainer, shape = RoundedCornerShape(999.dp)) {
-                                Text(
-                                    text = "Offline ($pendingSyncCount)",
-                                    color = StatusAmber,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
-                                )
-                            }
-                        }
-                    }
-                },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                actions = {
-                    TextButton(onClick = onOpenEditAll) {
-                        Icon(Icons.Default.Edit, null, Modifier.size(16.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("Edit", fontWeight = FontWeight.SemiBold)
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
-            )
-        }
-    ) { innerPadding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .imePadding()
-                .verticalScroll(rememberScrollState())
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .imePadding()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        // Profile Header
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            // Header Profile Row
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .background(BrandBlueContainer),
+                contentAlignment = Alignment.Center
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(48.dp)
-                        .clip(CircleShape)
-                        .background(BrandBlueContainer),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = lead.initials(schema.nameCol),
-                        color = BrandBlue,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-                Spacer(Modifier.width(12.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = name,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    if (phone.isNotBlank()) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                text = phone,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Spacer(Modifier.width(6.dp))
-                            Icon(
-                                Icons.Default.ContentCopy,
-                                contentDescription = "Copy",
-                                modifier = Modifier
-                                    .size(14.dp)
-                                    .clickable { onCopyPhone(phone) },
-                                tint = BrandBlue
-                            )
-                        }
-                    }
-                }
-                if (leadType.isNotBlank()) {
-                    Surface(color = badgeBg, shape = RoundedCornerShape(999.dp)) {
+                Text(
+                    text = lead.initials(schema.nameCol),
+                    color = BrandBlue,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = name,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                if (phone.isNotBlank()) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            text = leadType,
-                            color = badgeFg,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                            text = phone,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Icon(
+                            Icons.Default.ContentCopy,
+                            contentDescription = "Copy",
+                            modifier = Modifier
+                                .size(14.dp)
+                                .clickable { onCopyPhone(phone) },
+                            tint = BrandBlue
                         )
                     }
                 }
             }
+            if (leadType.isNotBlank()) {
+                Surface(color = badgeBg, shape = RoundedCornerShape(999.dp)) {
+                    Text(
+                        text = leadType,
+                        color = badgeFg,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                    )
+                }
+            }
+        }
 
-            // 2x2 Instant Action Grid:
-            // Call Now | Follow-up Dropdown (1 done. .. 5 done. / Lost — NO DatePicker!)
-            // WA Follow-up | WA Portfolio
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+        // 2x2 Instant Actions: Call Now | Follow-up Dropdown, WA Follow-up | WA Portfolio
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Button(
+                onClick = onCall,
+                enabled = phone.isNotBlank(),
+                colors = ButtonDefaults.buttonColors(containerColor = BrandBlue),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier
+                    .weight(1f)
+                    .height(54.dp)
             ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(Icons.Default.Call, null, Modifier.size(18.dp))
+                    Text("Call Now", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
+
+            Box(modifier = Modifier.weight(1f)) {
                 Button(
-                    onClick = onCall,
-                    enabled = phone.isNotBlank(),
-                    colors = ButtonDefaults.buttonColors(containerColor = BrandBlue),
+                    onClick = { followUpDropdownExpanded = true },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        contentColor = MaterialTheme.colorScheme.onSurface
+                    ),
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier
-                        .weight(1f)
+                        .fillMaxWidth()
                         .height(54.dp)
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(Icons.Default.Call, null, Modifier.size(18.dp))
-                        Text("Call Now", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Repeat, null, Modifier.size(16.dp), tint = BrandBlue)
+                            Icon(Icons.Default.ArrowDropDown, null, Modifier.size(16.dp), tint = BrandBlue)
+                        }
+                        Text(
+                            text = currentFollowUp.ifBlank { "Follow-up" },
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                 }
 
-                Box(modifier = Modifier.weight(1f)) {
-                    Button(
-                        onClick = { followUpDropdownExpanded = true },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                            contentColor = MaterialTheme.colorScheme.onSurface
-                        ),
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(54.dp)
+                DropdownMenu(
+                    expanded = followUpDropdownExpanded,
+                    onDismissRequest = { followUpDropdownExpanded = false }
+                ) {
+                    state.followUpDropdownOptions.forEach { option ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = option,
+                                    fontWeight = if (option.equals(currentFollowUp, ignoreCase = true)) FontWeight.Bold else FontWeight.Normal
+                                )
+                            },
+                            trailingIcon = if (option.equals(currentFollowUp, ignoreCase = true)) {
+                                { Icon(Icons.Default.Check, null, tint = BrandBlue) }
+                            } else null,
+                            onClick = {
+                                followUpDropdownExpanded = false
+                                onSelectFollowUp(option)
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Button(
+                onClick = onWhatsAppFollowUp,
+                enabled = phone.isNotBlank(),
+                colors = ButtonDefaults.buttonColors(containerColor = CallGreen),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier
+                    .weight(1f)
+                    .height(54.dp)
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(Icons.AutoMirrored.Filled.Chat, null, Modifier.size(18.dp))
+                    Text("WA Follow-up", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
+            Button(
+                onClick = onWhatsAppPortfolio,
+                enabled = phone.isNotBlank(),
+                colors = ButtonDefaults.buttonColors(containerColor = PortfolioTeal),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier
+                    .weight(1f)
+                    .height(54.dp)
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(Icons.Default.WorkOutline, null, Modifier.size(18.dp))
+                    Text("WA Portfolio", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+
+        // Dynamic Lead Information Card
+        Card(
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        ) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Lead Information (Row #${lead.rowIndex})",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Edit fields",
+                        color = BrandBlue,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.clickable { onOpenEditAll() }
+                    )
+                }
+                HorizontalDivider()
+                schema.allHeaders.forEach { header ->
+                    val value = lead.fields[header]?.trim().orEmpty()
+                    val isLocked = schema.isLockedColumn(header)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.Top
                     ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.Repeat, null, Modifier.size(16.dp), tint = BrandBlue)
-                                Icon(Icons.Default.ArrowDropDown, null, Modifier.size(16.dp), tint = BrandBlue)
+                        Row(
+                            modifier = Modifier.width(115.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (isLocked) {
+                                Icon(Icons.Default.Lock, "Locked", Modifier.size(12.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Spacer(Modifier.width(4.dp))
                             }
                             Text(
-                                text = currentFollowUp.ifBlank { "Follow-up" },
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1,
+                                text = header,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 2,
                                 overflow = TextOverflow.Ellipsis
                             )
                         }
-                    }
-
-                    DropdownMenu(
-                        expanded = followUpDropdownExpanded,
-                        onDismissRequest = { followUpDropdownExpanded = false }
-                    ) {
-                        followUpOptions.forEach { option ->
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        text = option,
-                                        fontWeight = if (option.equals(currentFollowUp, ignoreCase = true)) FontWeight.Bold else FontWeight.Normal
-                                    )
-                                },
-                                trailingIcon = if (option.equals(currentFollowUp, ignoreCase = true)) {
-                                    { Icon(Icons.Default.Check, null, tint = BrandBlue) }
-                                } else null,
-                                onClick = {
-                                    followUpDropdownExpanded = false
-                                    onSelectFollowUp(option)
-                                }
-                            )
-                        }
+                        Text(
+                            text = value.ifBlank { "—" },
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier.weight(1f)
+                        )
                     }
                 }
             }
+        }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Button(
-                    onClick = onWhatsAppFollowUp,
-                    enabled = phone.isNotBlank(),
-                    colors = ButtonDefaults.buttonColors(containerColor = CallGreen),
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(54.dp)
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(Icons.AutoMirrored.Filled.Chat, null, Modifier.size(18.dp))
-                        Text("WA Follow-up", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                    }
-                }
-                Button(
-                    onClick = onWhatsAppPortfolio,
-                    enabled = phone.isNotBlank(),
-                    colors = ButtonDefaults.buttonColors(containerColor = PortfolioTeal),
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(54.dp)
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(Icons.Default.WorkOutline, null, Modifier.size(18.dp))
-                        Text("WA Portfolio", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                    }
-                }
-            }
-
-            // Dynamic Future-Proof Info Card (shows every column in the Sheet!)
-            Card(
-                shape = RoundedCornerShape(14.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-            ) {
-                Column(
-                    modifier = Modifier.padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "Lead Information (Row #${lead.rowIndex})",
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = "Edit fields",
-                            color = BrandBlue,
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier.clickable { onOpenEditAll() }
-                        )
-                    }
-                    HorizontalDivider()
-                    schema.allHeaders.forEach { header ->
-                        val value = lead.fields[header]?.trim().orEmpty()
-                        val isLocked = schema.isLockedColumn(header)
+        // Add Call Note Card (shows assigned team counts too!)
+        Card(
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            border = BorderStroke(1.dp, CallGreen.copy(alpha = 0.35f))
+        ) {
+            Column {
+                Surface(color = CallGreenContainer, modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.Top
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Row(
-                                modifier = Modifier.width(115.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                if (isLocked) {
-                                    Icon(
-                                        Icons.Default.Lock,
-                                        contentDescription = "Locked",
-                                        modifier = Modifier.size(12.dp),
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                    Spacer(Modifier.width(4.dp))
-                                }
-                                Text(
-                                    text = header,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
                             Text(
-                                text = value.ifBlank { "—" },
-                                style = MaterialTheme.typography.bodySmall,
-                                fontWeight = FontWeight.Medium,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.weight(1f)
+                                text = "Add Call Note",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = CallGreenDarkText
                             )
+                            if (state.isNoteColumnLockedByProfile) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.Lock, null, tint = CallGreenDarkText, modifier = Modifier.size(13.dp))
+                                    Spacer(Modifier.width(3.dp))
+                                    Text(
+                                        text = "${state.config.callerProfile} (${state.countForAssignee(state.config.callerProfile)})",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = CallGreenDarkText
+                                    )
+                                }
+                            }
                         }
-                    }
-                }
-            }
-
-            // Add Call Note Card (Follow-Ups strictly excluded, preserves exact casing, NO timestamp prefix, auto-updates Last Call!)
-            Card(
-                shape = RoundedCornerShape(14.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                border = BorderStroke(1.dp, CallGreen.copy(alpha = 0.35f))
-            ) {
-                Column {
-                    Surface(color = CallGreenContainer, modifier = Modifier.fillMaxWidth()) {
-                        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                        Text(
+                            text = "Adds on a new line · Auto-updates Last Call & History.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = CallGreenDarkText.copy(alpha = 0.85f)
+                        )
+                        if (!state.isNoteColumnLockedByProfile && schema.noteColumnOptions.isNotEmpty()) {
+                            Spacer(Modifier.height(6.dp))
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
-                                Text(
-                                    text = "Add Call Note",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    fontWeight = FontWeight.Bold,
-                                    color = CallGreenDarkText
-                                )
-                                if (isNoteColumnLockedByProfile) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Default.Lock, null, tint = CallGreenDarkText, modifier = Modifier.size(13.dp))
-                                        Spacer(Modifier.width(3.dp))
+                                schema.noteColumnOptions.forEach { col ->
+                                    val selected = col == state.activeNoteColumn
+                                    val count = state.countForAssignee(col)
+                                    val label = if (count > 0 || state.assigneeDropdownOptions.any { it.equals(col, ignoreCase = true) }) {
+                                        "$col ($count)"
+                                    } else col
+                                    Surface(
+                                        shape = RoundedCornerShape(999.dp),
+                                        color = if (selected) CallGreen else Color.White,
+                                        modifier = Modifier.clickable { onSelectNoteColumn(col) }
+                                    ) {
                                         Text(
-                                            text = callerProfile,
+                                            text = label,
+                                            color = if (selected) Color.White else CallGreenDarkText,
                                             style = MaterialTheme.typography.labelSmall,
-                                            fontWeight = FontWeight.Bold,
-                                            color = CallGreenDarkText
+                                            fontWeight = FontWeight.SemiBold,
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
                                         )
                                     }
                                 }
                             }
-                            Text(
-                                text = "Adds on a new line (keeps old notes) & auto-updates Last Call.",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = CallGreenDarkText.copy(alpha = 0.85f)
-                            )
-                            if (!isNoteColumnLockedByProfile && schema.noteColumnOptions.isNotEmpty()) {
-                                Spacer(Modifier.height(6.dp))
-                                FlowRow(
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                        }
+                    }
+                }
+
+                OutlinedTextField(
+                    value = callerNoteInput,
+                    onValueChange = { callerNoteInput = it },
+                    placeholder = { Text("Write note for '${state.activeNoteColumn ?: "Notes"}'...") },
+                    minLines = 3,
+                    maxLines = 6,
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp),
+                    shape = RoundedCornerShape(10.dp)
+                )
+            }
+        }
+
+        Button(
+            onClick = {
+                val text = callerNoteInput.trim()
+                if (text.isNotEmpty()) {
+                    onSaveCallerNote(state.activeNoteColumn, text)
+                    callerNoteInput = ""
+                }
+            },
+            enabled = !state.isSaving && callerNoteInput.isNotBlank(),
+            colors = ButtonDefaults.buttonColors(containerColor = BrandBlue),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp)
+        ) {
+            if (state.isSaving) {
+                CircularProgressIndicator(Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
+            } else {
+                Icon(Icons.Default.Save, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Save Note to ${state.activeNoteColumn ?: "Sheet"}", fontWeight = FontWeight.SemiBold)
+            }
+        }
+
+        // IMMUTABLE READ-ONLY ACTIVITY HISTORY CARD (Cannot be edited or deleted!)
+        Card(
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        ) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.History, null, tint = BrandBlue, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = "Activity History (${historyEntries.size})",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Lock, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(12.dp))
+                        Spacer(Modifier.width(3.dp))
+                        Text(
+                            text = "Permanent",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                HorizontalDivider()
+                if (historyEntries.isEmpty()) {
+                    Text(
+                        text = "No activity recorded yet. Every call, status change, follow-up, and note is permanently logged here and in the Sheet's History tab.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    historyEntries.take(25).forEach { entry ->
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    schema.noteColumnOptions.forEach { col ->
-                                        val selected = col == activeNoteColumn
-                                        Surface(
-                                            shape = RoundedCornerShape(999.dp),
-                                            color = if (selected) CallGreen else Color.White,
-                                            modifier = Modifier.clickable { onSelectNoteColumn(col) }
-                                        ) {
-                                            Text(
-                                                text = col,
-                                                color = if (selected) Color.White else CallGreenDarkText,
-                                                style = MaterialTheme.typography.labelSmall,
-                                                fontWeight = FontWeight.SemiBold,
-                                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                                            )
-                                        }
+                                    Text(
+                                        text = "${entry.caller.ifBlank { "Caller" }} · ${entry.action}",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (entry.action.equals("Call", ignoreCase = true)) CallGreen else BrandBlue
+                                    )
+                                    Text(
+                                        text = entry.timestamp,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Spacer(Modifier.height(3.dp))
+                                if (entry.callDuration.isNotBlank()) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Default.Timer, null, Modifier.size(13.dp), tint = CallGreen)
+                                        Spacer(Modifier.width(4.dp))
+                                        Text(
+                                            text = "Call Duration: ${entry.callDuration}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = CallGreenDarkText
+                                        )
                                     }
+                                }
+                                if (entry.fieldChanged.isNotBlank() && !entry.action.equals("Call", ignoreCase = true)) {
+                                    val changeText = if (entry.oldValue.isNotBlank()) {
+                                        "${entry.fieldChanged}: ${entry.oldValue} → ${entry.newValue}"
+                                    } else {
+                                        "${entry.fieldChanged}: ${entry.newValue}"
+                                    }
+                                    Text(
+                                        text = changeText,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
                                 }
                             }
                         }
                     }
-
-                    OutlinedTextField(
-                        value = callerNoteInput,
-                        onValueChange = { callerNoteInput = it },
-                        placeholder = { Text("Write note for '${activeNoteColumn ?: "Notes"}'...") },
-                        minLines = 3,
-                        maxLines = 6,
-                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(12.dp),
-                        shape = RoundedCornerShape(10.dp)
-                    )
-                }
-            }
-
-            Button(
-                onClick = {
-                    val text = callerNoteInput.trim()
-                    if (text.isNotEmpty()) {
-                        onSaveCallerNote(activeNoteColumn, text)
-                        callerNoteInput = ""
-                    }
-                },
-                enabled = !isSaving && callerNoteInput.isNotBlank(),
-                colors = ButtonDefaults.buttonColors(containerColor = BrandBlue),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(48.dp)
-            ) {
-                if (isSaving) {
-                    CircularProgressIndicator(Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
-                } else {
-                    Icon(Icons.Default.Save, null, Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("Save Note to ${activeNoteColumn ?: "Sheet"}", fontWeight = FontWeight.SemiBold)
                 }
             }
         }
+
+        Spacer(Modifier.height(12.dp))
     }
 }
 
 // ============================================================================
-// POST-CALL QUICK NOTE SHEET (Auto-opens after call ends)
+// POST-CALL QUICK NOTE SHEET (Shows exact detected Call Duration!)
 // ============================================================================
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -1466,6 +1634,7 @@ private fun PostCallQuickNoteSheet(
     schema: SchemaMapping,
     activeNoteColumn: String?,
     isNoteColumnLockedByProfile: Boolean,
+    detectedDuration: String,
     statusOptions: List<String>,
     followUpOptions: List<String>,
     isSaving: Boolean,
@@ -1487,9 +1656,32 @@ private fun PostCallQuickNoteSheet(
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp, vertical = 8.dp)
         ) {
-            Text("Post-Call Note", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Post-Call Note", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                if (detectedDuration.isNotBlank()) {
+                    Surface(color = CallGreenContainer, shape = RoundedCornerShape(999.dp)) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.Timer, null, Modifier.size(14.dp), tint = CallGreenDarkText)
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                text = detectedDuration,
+                                color = CallGreenDarkText,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+            }
             Text(
-                "#${lead.rowIndex} · $leadName (Last Call auto-updates on save)",
+                "#${lead.rowIndex} · $leadName (Last Call & History auto-save)",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -1579,7 +1771,7 @@ private fun PostCallQuickNoteSheet(
 }
 
 // ============================================================================
-// EDIT LEAD DETAILS SHEET — Smart Pickers (NO unwanted keyboard!)
+// EDIT LEAD DETAILS SHEET — Smart Pickers
 // ============================================================================
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1600,7 +1792,6 @@ private fun EditEditableFieldsSheet(
         }
     }
 
-    // Track which Date column is currently picking a date
     var activeDatePickerColumn by remember { mutableStateOf<String?>(null) }
 
     if (activeDatePickerColumn != null) {
@@ -1646,7 +1837,7 @@ private fun EditEditableFieldsSheet(
         ) {
             Text("Edit Lead Details", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             Text(
-                "Name & Phone are locked. Tap Date/Last Call for Calendar, or Lead Type/Follow-Ups/Assigned for dropdown.",
+                "Name & Phone are locked. Every saved edit is logged permanently to the History tab.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -1669,7 +1860,6 @@ private fun EditEditableFieldsSheet(
                     }
 
                     schema.isDateColumn(header) -> {
-                        // Non-focusable Calendar Picker field — NEVER opens keyboard!
                         NonKeyboardPickerField(
                             label = header,
                             value = currentVal.ifBlank { "Tap to pick date" },
@@ -1707,7 +1897,6 @@ private fun EditEditableFieldsSheet(
                     }
 
                     else -> {
-                        // Notes & any future custom columns (preserves exact uppercase/lowercase!)
                         OutlinedTextField(
                             value = currentVal,
                             onValueChange = { values[header] = it },
@@ -1765,11 +1954,7 @@ private fun NonKeyboardPickerField(
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = label,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(2.dp))
                 Text(
                     text = value,
@@ -1825,7 +2010,7 @@ private fun NonKeyboardDropdownField(
 }
 
 // ============================================================================
-// SETTINGS SCREEN (with Caller Profile Lock!)
+// SETTINGS SCREEN (Caller Profile Lock with live Assigned People & Counts!)
 // ============================================================================
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1897,15 +2082,15 @@ private fun SettingsTabScreen(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Caller Profile Lock Section
-            SettingsSectionHeader(Icons.Default.Badge, "Caller Profile Lock")
+            // Caller Profile Lock (shows all assigned people + counts!)
+            SettingsSectionHeader(Icons.Default.Badge, "Caller Profile Lock (${state.assigneeDropdownOptions.size} team)")
             Card(
                 shape = RoundedCornerShape(14.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
             ) {
                 Column(modifier = Modifier.padding(14.dp)) {
                     Text(
-                        text = "Lock this phone to a caller so notes automatically save to their column and 'My Leads' filter activates.",
+                        text = "Lock this phone to a caller so History logs their name, notes auto-target their column, and 'My Leads' filter activates.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1914,7 +2099,11 @@ private fun SettingsTabScreen(
                         val currentProfile = state.config.callerProfile
                         NonKeyboardPickerField(
                             label = "Active Caller Profile",
-                            value = if (currentProfile.isBlank()) "Unlocked (Choose column manually)" else "Locked to: $currentProfile",
+                            value = if (currentProfile.isBlank()) {
+                                "Unlocked (${state.assigneeDropdownOptions.size} assigned options)"
+                            } else {
+                                "Locked to: $currentProfile (${state.countForAssignee(currentProfile)} leads)"
+                            },
                             isPlaceholder = currentProfile.isBlank(),
                             icon = Icons.Default.ArrowDropDown,
                             onClick = { profileMenuExpanded = true }
@@ -1934,8 +2123,9 @@ private fun SettingsTabScreen(
                                 }
                             )
                             state.callerProfileOptions.forEach { profile ->
+                                val count = state.countForAssignee(profile)
                                 DropdownMenuItem(
-                                    text = { Text(profile) },
+                                    text = { Text("$profile ($count leads)") },
                                     trailingIcon = if (profile.equals(currentProfile, ignoreCase = true)) {
                                         { Icon(Icons.Default.Check, null, tint = BrandBlue) }
                                     } else null,
@@ -2097,7 +2287,7 @@ private fun SettingsTabScreen(
                         Column(modifier = Modifier.weight(1f)) {
                             Text("Sync & Activity Logs", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
                             Text(
-                                "${state.logs.size} recent events · Pending offline: ${state.pendingSyncCount}",
+                                "${state.logs.size} events · ${state.payload.history.size} history rows · Offline queue: ${state.pendingSyncCount}",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -2117,12 +2307,7 @@ private fun SettingsSectionHeader(icon: ImageVector, title: String) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Icon(icon, contentDescription = null, tint = BrandBlue, modifier = Modifier.size(18.dp))
         Spacer(Modifier.width(8.dp))
-        Text(
-            text = title,
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Bold,
-            color = BrandBlue
-        )
+        Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = BrandBlue)
     }
 }
 
