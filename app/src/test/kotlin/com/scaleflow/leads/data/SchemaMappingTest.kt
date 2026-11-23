@@ -5,14 +5,14 @@ import org.junit.Test
 
 class SchemaMappingTest {
     @Test
-    fun detectsStandardCrmColumns() {
-        val headers = listOf("Business Name", "Phone Number", "Website URL", "Call Status", "Call Notes", "Follow-Up Date")
+    fun detectsScaleFlowLeadsColumns() {
+        val headers = listOf("Date", "Last Call", "Name", "Numbers", "Lead Type", "Follow-Ups", "Assined to", "Faizan", "Saurabh")
         val schema = SchemaMapping.detect(headers)
-        assertEquals("Business Name", schema.nameCol)
-        assertEquals("Phone Number", schema.phoneCol)
-        assertEquals("Website URL", schema.websiteCol)
-        assertEquals("Call Status", schema.statusCol)
-        assertEquals("Call Notes", schema.notesCol)
-        assertEquals("Follow-Up Date", schema.followUpCol)
+        assertEquals("Name", schema.nameCol)
+        assertEquals("Numbers", schema.phoneCol)
+        assertEquals("Lead Type", schema.statusCol)
+        assertEquals("Follow-Ups", schema.followUpCol)
+        assertEquals("Last Call", schema.lastCallCol)
+        assertEquals("Assined to", schema.assignedCol)
     }
 }

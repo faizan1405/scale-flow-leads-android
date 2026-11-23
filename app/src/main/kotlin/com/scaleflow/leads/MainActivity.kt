@@ -5,6 +5,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.scaleflow.leads.ui.main.MainScreen
 import com.scaleflow.leads.ui.main.MainScreenViewModel
 import com.scaleflow.leads.ui.theme.ScaleFlowLeadsTheme
@@ -17,7 +19,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            ScaleFlowLeadsTheme {
+            val state by viewModel.uiState.collectAsStateWithLifecycle()
+            ScaleFlowLeadsTheme(darkTheme = state.config.darkTheme) {
                 MainScreen(viewModel = viewModel)
             }
         }

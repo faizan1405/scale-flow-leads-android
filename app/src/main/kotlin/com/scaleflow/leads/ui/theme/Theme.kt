@@ -1,6 +1,5 @@
 package com.scaleflow.leads.ui.theme
 
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -26,26 +25,26 @@ private val DarkColorScheme = darkColorScheme(
 )
 
 private val LightColorScheme = lightColorScheme(
-    primary = IndigoPrimary,
-    onPrimary = IndigoOnPrimary,
-    primaryContainer = IndigoContainer,
-    onPrimaryContainer = IndigoOnContainer,
-    secondary = SlateSecondary,
-    onSecondary = SlateOnSecondary,
-    secondaryContainer = SlateContainer,
-    onSecondaryContainer = SlateOnContainer,
+    primary = BrandBlue,
+    onPrimary = Color.White,
+    primaryContainer = BrandBlueContainer,
+    onPrimaryContainer = BrandBlueOnContainer,
+    secondary = Color(0xFF475569),
+    onSecondary = Color.White,
+    secondaryContainer = LightSurfaceVariant,
+    onSecondaryContainer = LightTextPrimary,
     background = LightBackground,
-    onBackground = Color(0xFF0F172A),
+    onBackground = LightTextPrimary,
     surface = LightSurface,
-    onSurface = Color(0xFF0F172A),
+    onSurface = LightTextPrimary,
     surfaceVariant = LightSurfaceVariant,
-    onSurfaceVariant = Color(0xFF475569),
+    onSurfaceVariant = LightTextSecondary,
     outline = LightOutline
 )
 
 @Composable
 fun ScaleFlowLeadsTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
+    darkTheme: Boolean = false,
     content: @Composable () -> Unit
 ) {
     val colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme

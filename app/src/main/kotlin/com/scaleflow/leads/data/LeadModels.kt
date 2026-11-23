@@ -14,8 +14,8 @@ data class SheetPayload(
     val ok: Boolean = true,
     val error: String? = null,
     val spreadsheetName: String = "Scale Flow Leads",
-    val sheetName: String = "Leads",
-    val sheetNames: List<String> = listOf("Leads"),
+    val sheetName: String = "Leads ",
+    val sheetNames: List<String> = listOf("Leads "),
     val headers: List<String> = emptyList(),
     val rows: List<LeadRow> = emptyList(),
     val updatedAt: String = ""
@@ -31,13 +31,25 @@ data class MutationResponse(
 )
 
 @Serializable
+data class SyncLogEntry(
+    val timestamp: String,
+    val level: String, // "INFO", "OK", "ERROR"
+    val message: String
+)
+
+@Serializable
 data class AppConfig(
     val scriptUrl: String = DEFAULT_SCRIPT_URL,
     val apiKey: String = "",
     val selectedSheet: String = "Leads ",
     val autoSyncSeconds: Int = 15,
     val demoMode: Boolean = false,
-    val githubRepo: String = DEFAULT_GITHUB_REPO
+    val githubRepo: String = DEFAULT_GITHUB_REPO,
+    val darkTheme: Boolean = false,
+    val defaultWhatsAppMessage: String = "Hi {{name}}, thanks for your interest. Let me know a convenient time to connect.",
+    val confirmBeforeCall: Boolean = false,
+    val autoOpenNotesAfterCall: Boolean = true,
+    val sortBy: String = "Sheet order"
 ) {
     val isConnected: Boolean
         get() = scriptUrl.trim().startsWith("https://")
@@ -55,7 +67,11 @@ data class SchemaMapping(
     val websiteCol: String?,
     val statusCol: String?,
     val notesCol: String?,
+    val callerNotesCol: String?,
     val followUpCol: String?,
+    val lastCallCol: String?,
+    val assignedCol: String?,
+    val dateCol: String?,
     val allHeaders: List<String>
 ) {
     companion object {
@@ -72,13 +88,21 @@ data class SchemaMapping(
                 return null
             }
 
-            val nameCol = findFirst("business", "company", "name", "lead", "client", "shop", "store", "title")
+            val nameCol = findFirst("name", "business", "company", "lead", "client", "shop", "store", "title")
                 ?: headers.firstOrNull()
-            val phoneCol = findFirst("phone", "mobile", "numbers", "number", "contact", "tel", "whatsapp", "call")
+            val phoneCol = findFirst("numbers", "phone", "mobile", "number", "contact", "tel", "whatsapp")
             val websiteCol = findFirst("website", "url", "site", "domain", "link", "web")
-            val statusCol = findFirst("status", "lead type", "stage", "result", "outcome", "state", "type")
-            val notesCol = findFirst("call notes", "notes", "note", "remarks", "comment", "feedback", "summary", "follow-ups", "follow ups", "last call")
-            val followUpCol = findFirst("follow-ups", "follow up", "follow-up", "followup", "callback", "next call", "last call", "reminder")
+            val statusCol = findFirst("lead type", "status", "stage", "result", "outcome", "state", "type")
+            val followUpCol = findFirst("follow-ups", "follow-up", "follow up", "followup", "callback", "next call")
+            val lastCallCol = findFirst("last call", "last called", "called on")
+            val assignedCol = findFirst("assined to", "assigned to", "assigned", "owner", "caller")
+            val dateCol = findFirst("date", "created", "added")
+
+            // Existing sheet note vs separate caller notes
+            val notesCol = findFirst("faizan", "existing note", "notes", "note", "remarks", "comment", "summary")
+                ?: followUpCol
+            val callerNotesCol = findFirst("caller notes", "saurabh", "call notes", "notes", "note", "follow-ups")
+                ?: notesCol
 
             return SchemaMapping(
                 nameCol = nameCol,
@@ -86,7 +110,11 @@ data class SchemaMapping(
                 websiteCol = websiteCol,
                 statusCol = statusCol,
                 notesCol = notesCol,
+                callerNotesCol = callerNotesCol,
                 followUpCol = followUpCol,
+                lastCallCol = lastCallCol,
+                assignedCol = assignedCol,
+                dateCol = dateCol,
                 allHeaders = headers
             )
         }
@@ -96,4 +124,14 @@ data class SchemaMapping(
 fun LeadRow.displayValue(col: String?): String {
     if (col == null) return ""
     return fields[col]?.trim().orEmpty()
+}
+
+fun LeadRow.initials(nameCol: String?): String {
+    val raw = displayValue(nameCol).ifBlank { "SF" }
+    val parts = raw.split(" ").filter { it.isNotBlank() }
+    return when {
+        parts.size >= 2 -> "${parts[0].first().uppercaseChar()}${parts[1].first().uppercaseChar()}"
+        raw.length >= 2 -> raw.take(2).uppercase()
+        else -> raw.uppercase()
+    }
 }
