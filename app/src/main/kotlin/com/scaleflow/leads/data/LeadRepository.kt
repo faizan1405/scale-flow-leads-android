@@ -7,6 +7,19 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+data class SaveOutcome(
+    val payload: SheetPayload,
+    val syncedImmediately: Boolean,
+    val pendingCount: Int,
+    val errorDetail: String? = null
+)
+
+data class FlushResult(
+    val flushedCount: Int,
+    val remainingCount: Int,
+    val lastError: String? = null
+)
+
 class LeadRepository(context: Context) {
 
     private val prefs = context.getSharedPreferences("scale_flow_leads_prefs", Context.MODE_PRIVATE)
@@ -34,73 +47,110 @@ class LeadRepository(context: Context) {
         prefs.edit().putString(KEY_CACHE, json.encodeToString(payload)).apply()
     }
 
-    fun demoPayload(): SheetPayload {
-        val cached = loadCachedPayload()
-        if (cached != null && cached.spreadsheetName == "Scale Flow Leads (Demo)") {
-            return cached
-        }
-        val initial = SheetPayload(
-            ok = true,
-            spreadsheetName = "Scale Flow Leads (Demo)",
-            sheetName = "Website Leads",
-            sheetNames = listOf("Website Leads"),
-            headers = listOf("Business Name", "Phone", "Website", "Status", "Call Notes", "Follow-Up"),
-            rows = listOf(
-                LeadRow(
-                    rowIndex = 2,
-                    fields = mapOf(
-                        "Business Name" to "Apex Dental Clinic",
-                        "Phone" to "+1 555 234 8910",
-                        "Website" to "https://apexdental.example.com",
-                        "Status" to "New",
-                        "Call Notes" to "Outdated mobile layout, great fit for redesign.",
-                        "Follow-Up" to "Today 4:00 PM"
-                    )
-                ),
-                LeadRow(
-                    rowIndex = 3,
-                    fields = mapOf(
-                        "Business Name" to "BrightPath Roofing",
-                        "Phone" to "+1 555 891 4420",
-                        "Website" to "https://brightpathroofing.example.com",
-                        "Status" to "Callback",
-                        "Call Notes" to "[23 Nov, 11:15 AM] Spoke with receptionist, owner available after 3 PM.",
-                        "Follow-Up" to "Tomorrow"
-                    )
-                ),
-                LeadRow(
-                    rowIndex = 4,
-                    fields = mapOf(
-                        "Business Name" to "GreenLeaf Landscaping",
-                        "Phone" to "+1 555 302 7781",
-                        "Website" to "No website",
-                        "Status" to "Interested",
-                        "Call Notes" to "[23 Nov, 01:30 PM] Owner wants portfolio samples on WhatsApp.",
-                        "Follow-Up" to "Send quote"
-                    )
-                )
-            ),
-            updatedAt = nowIso()
-        )
-        saveCachedPayload(initial)
-        return initial
+    fun loadPendingOps(): List<PendingSyncOp> {
+        val raw = prefs.getString(KEY_PENDING_QUEUE, null) ?: return emptyList()
+        return runCatching { json.decodeFromString<List<PendingSyncOp>>(raw) }.getOrElse { emptyList() }
     }
 
+    private fun savePendingOps(ops: List<PendingSyncOp>) {
+        prefs.edit().putString(KEY_PENDING_QUEUE, json.encodeToString(ops)).apply()
+    }
+
+    fun enqueuePendingOp(sheetName: String, rowIndex: Int, fields: Map<String, String>): Int {
+        val current = loadPendingOps().toMutableList()
+        // Merge with existing pending op for the same sheet + row so queue stays compact & ordered
+        val existingIdx = current.indexOfFirst { it.sheetName == sheetName && it.rowIndex == rowIndex }
+        if (existingIdx != -1) {
+            val existing = current[existingIdx]
+            current[existingIdx] = existing.copy(
+                fields = existing.fields + fields,
+                createdAt = nowIso()
+            )
+        } else {
+            current.add(
+                PendingSyncOp(
+                    id = System.currentTimeMillis(),
+                    sheetName = sheetName,
+                    rowIndex = rowIndex,
+                    fields = fields,
+                    createdAt = nowIso()
+                )
+            )
+        }
+        savePendingOps(current)
+        return current.size
+    }
+
+    /**
+     * Flushes all queued offline edits in order to Google Sheets.
+     */
+    suspend fun flushPendingQueue(config: AppConfig): FlushResult {
+        val queue = loadPendingOps()
+        if (queue.isEmpty() || config.demoMode || !config.isConnected) {
+            return FlushResult(0, queue.size)
+        }
+
+        val remaining = mutableListOf<PendingSyncOp>()
+        var flushed = 0
+        var lastError: String? = null
+
+        for (i in queue.indices) {
+            val op = queue[i]
+            val res = api.updateRow(
+                scriptUrl = config.scriptUrl,
+                apiKey = config.apiKey,
+                sheetName = op.sheetName,
+                rowIndex = op.rowIndex,
+                fields = op.fields
+            )
+            if (res.isSuccess) {
+                flushed++
+            } else {
+                lastError = res.exceptionOrNull()?.message
+                remaining.addAll(queue.subList(i, queue.size))
+                break
+            }
+        }
+
+        savePendingOps(remaining)
+        return FlushResult(flushed, remaining.size, lastError)
+    }
+
+    /**
+     * Fetches live leads and overlays any unsynced local offline edits so local work is never overwritten.
+     */
     suspend fun fetchLeads(config: AppConfig): Result<SheetPayload> {
         if (config.demoMode || !config.isConnected) {
-            return Result.success(demoPayload())
+            return Result.success(loadCachedPayload() ?: SheetPayload())
         }
         val result = api.fetchSheet(config.scriptUrl, config.apiKey, config.selectedSheet)
-        result.onSuccess { saveCachedPayload(it) }
-        return result
+        return result.map { remote ->
+            val pending = loadPendingOps().filter { it.sheetName == remote.sheetName }
+            val merged = if (pending.isEmpty()) {
+                remote
+            } else {
+                val pendingByRow = pending.associateBy { it.rowIndex }
+                remote.copy(
+                    rows = remote.rows.map { row ->
+                        val p = pendingByRow[row.rowIndex]
+                        if (p != null) row.copy(fields = row.fields + p.fields) else row
+                    }
+                )
+            }
+            saveCachedPayload(merged)
+            merged
+        }
     }
 
-    suspend fun updateLead(
+    /**
+     * Updates lead fields immediately if online, or queues cleanly for offline sync if network fails.
+     */
+    suspend fun updateLeadWithOfflineQueue(
         config: AppConfig,
         currentPayload: SheetPayload,
         rowIndex: Int,
         updatedFields: Map<String, String>
-    ): Result<SheetPayload> {
+    ): SaveOutcome {
         val mergedRows = currentPayload.rows.map { row ->
             if (row.rowIndex == rowIndex) {
                 row.copy(fields = row.fields + updatedFields)
@@ -112,8 +162,9 @@ class LeadRepository(context: Context) {
         saveCachedPayload(optimistic)
 
         if (config.demoMode || !config.isConnected) {
-            return Result.success(optimistic)
+            return SaveOutcome(optimistic, syncedImmediately = true, pendingCount = loadPendingOps().size)
         }
+
         val apiResult = api.updateRow(
             scriptUrl = config.scriptUrl,
             apiKey = config.apiKey,
@@ -121,82 +172,17 @@ class LeadRepository(context: Context) {
             rowIndex = rowIndex,
             fields = updatedFields
         )
-        return apiResult.map { optimistic }
-    }
 
-    suspend fun appendCallNote(
-        config: AppConfig,
-        currentPayload: SheetPayload,
-        rowIndex: Int,
-        noteColumn: String?,
-        noteText: String,
-        statusColumn: String?,
-        statusValue: String?
-    ): Result<SheetPayload> {
-        val stamp = SimpleDateFormat("dd MMM, hh:mm a", Locale.getDefault()).format(Date())
-        val trimmedNote = noteText.trim()
-
-        val mergedRows = currentPayload.rows.map { row ->
-            if (row.rowIndex == rowIndex) {
-                val mutable = row.fields.toMutableMap()
-                if (!noteColumn.isNullOrBlank() && trimmedNote.isNotEmpty()) {
-                    val existing = mutable[noteColumn].orEmpty().trim()
-                    val entry = "[$stamp] $trimmedNote"
-                    mutable[noteColumn] = if (existing.isNotEmpty()) "$entry\n$existing" else entry
-                }
-                if (!statusColumn.isNullOrBlank() && !statusValue.isNullOrBlank()) {
-                    mutable[statusColumn] = statusValue
-                }
-                row.copy(fields = mutable)
-            } else {
-                row
-            }
-        }
-        val optimistic = currentPayload.copy(rows = mergedRows, updatedAt = nowIso())
-        saveCachedPayload(optimistic)
-
-        if (config.demoMode || !config.isConnected) {
-            return Result.success(optimistic)
-        }
-
-        val apiResult = api.appendNote(
-            scriptUrl = config.scriptUrl,
-            apiKey = config.apiKey,
-            sheetName = currentPayload.sheetName,
-            rowIndex = rowIndex,
-            noteColumn = noteColumn,
-            noteText = trimmedNote,
-            statusColumn = statusColumn,
-            statusValue = statusValue
-        )
-        return apiResult.map { optimistic }
-    }
-
-    suspend fun addLead(
-        config: AppConfig,
-        currentPayload: SheetPayload,
-        fields: Map<String, String>
-    ): Result<SheetPayload> {
-        val nextRowIndex = (currentPayload.rows.maxOfOrNull { it.rowIndex } ?: 1) + 1
-        if (config.demoMode || !config.isConnected) {
-            val newRow = LeadRow(rowIndex = nextRowIndex, fields = fields)
-            val updated = currentPayload.copy(rows = listOf(newRow) + currentPayload.rows, updatedAt = nowIso())
-            saveCachedPayload(updated)
-            return Result.success(updated)
-        }
-
-        val apiResult = api.appendRow(
-            scriptUrl = config.scriptUrl,
-            apiKey = config.apiKey,
-            sheetName = currentPayload.sheetName,
-            fields = fields
-        )
-        return apiResult.map { resp ->
-            val realRowIndex = resp.rowIndex ?: nextRowIndex
-            val newRow = LeadRow(rowIndex = realRowIndex, fields = fields)
-            val updated = currentPayload.copy(rows = currentPayload.rows + newRow, updatedAt = nowIso())
-            saveCachedPayload(updated)
-            updated
+        return if (apiResult.isSuccess) {
+            SaveOutcome(optimistic, syncedImmediately = true, pendingCount = loadPendingOps().size)
+        } else {
+            val count = enqueuePendingOp(currentPayload.sheetName, rowIndex, updatedFields)
+            SaveOutcome(
+                payload = optimistic,
+                syncedImmediately = false,
+                pendingCount = count,
+                errorDetail = apiResult.exceptionOrNull()?.message
+            )
         }
     }
 
@@ -206,5 +192,6 @@ class LeadRepository(context: Context) {
     companion object {
         private const val KEY_CONFIG = "app_config_json"
         private const val KEY_CACHE = "cached_sheet_payload_json"
+        private const val KEY_PENDING_QUEUE = "offline_pending_sync_queue_json"
     }
 }

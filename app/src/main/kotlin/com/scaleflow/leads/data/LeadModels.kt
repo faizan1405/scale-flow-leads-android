@@ -2,6 +2,9 @@ package com.scaleflow.leads.data
 
 import com.scaleflow.leads.BuildConfig
 import kotlinx.serialization.Serializable
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @Serializable
 data class LeadRow(
@@ -33,8 +36,17 @@ data class MutationResponse(
 @Serializable
 data class SyncLogEntry(
     val timestamp: String,
-    val level: String,
+    val level: String, // "INFO", "OK", "ERROR"
     val message: String
+)
+
+@Serializable
+data class PendingSyncOp(
+    val id: Long,
+    val sheetName: String,
+    val rowIndex: Int,
+    val fields: Map<String, String>,
+    val createdAt: String
 )
 
 @Serializable
@@ -50,7 +62,8 @@ data class AppConfig(
     val portfolioWhatsAppMessage: String = "Hi {{name}}, here is our website portfolio and recent work. Let us know what you think!",
     val autoOpenNotesAfterCall: Boolean = true,
     val sortBy: String = "Sheet order",
-    val preferredNoteColumn: String = ""
+    val preferredNoteColumn: String = "",
+    val callerProfile: String = "" // Caller Profile Lock (e.g. "Faizan", "Saurabh", or "" for none)
 ) {
     val isConnected: Boolean
         get() = scriptUrl.trim().startsWith("https://")
@@ -75,31 +88,46 @@ data class SchemaMapping(
     val allHeaders: List<String>
 ) {
     /**
-     * Columns that are locked (Name and Phone Number) and can only be edited in Google Sheets.
+     * Columns that are strictly locked (Name & Phone Number) and can only be edited in Google Sheets.
      */
     fun isLockedColumn(header: String): Boolean {
         return header == nameCol || header == phoneCol
     }
 
     /**
-     * Candidate columns where caller notes can be written (excludes locked & metadata columns).
+     * Date columns that should open a Calendar DatePicker instead of the keyboard.
+     */
+    fun isDateColumn(header: String): Boolean {
+        return header == dateCol || header == lastCallCol
+    }
+
+    /**
+     * Candidate columns for writing call notes — strictly excludes Follow-Ups, locked, and metadata columns.
      */
     val noteColumnOptions: List<String>
         get() {
-            val excluded = setOfNotNull(nameCol, phoneCol, dateCol, lastCallCol, statusCol, assignedCol)
-            val candidates = allHeaders.filter { it !in excluded }
-            return candidates.ifEmpty { allHeaders.filter { !isLockedColumn(it) } }
+            val excluded = setOfNotNull(
+                nameCol,
+                phoneCol,
+                dateCol,
+                lastCallCol,
+                statusCol,
+                followUpCol,
+                assignedCol,
+                websiteCol
+            )
+            return allHeaders.filter { it !in excluded }
         }
 
     companion object {
         fun detect(headers: List<String>): SchemaMapping {
             fun findFirst(vararg keywords: String): String? {
                 for (kw in keywords) {
-                    val exact = headers.firstOrNull { it.equals(kw, ignoreCase = true) }
+                    val exact = headers.firstOrNull { it.trim().equals(kw, ignoreCase = true) }
                     if (exact != null) return exact
                 }
                 for (kw in keywords) {
-                    val partial = headers.firstOrNull { it.contains(kw, ignoreCase = true) }
+                    val partial = headers.firstOrNull { it.trim().contains(kw, ignoreCase = true) }
                     if (partial != null) return partial
                 }
                 return null
@@ -115,8 +143,12 @@ data class SchemaMapping(
             val assignedCol = findFirst("assined to", "assigned to", "assigned", "owner", "caller")
             val dateCol = findFirst("date", "created", "added")
 
+            val excluded = setOfNotNull(
+                nameCol, phoneCol, dateCol, lastCallCol, statusCol, followUpCol, assignedCol, websiteCol
+            )
             val notesCol = findFirst("caller notes", "call notes", "notes", "note", "remarks", "comment", "summary", "faizan")
-                ?: followUpCol
+                ?.takeIf { it !in excluded }
+                ?: headers.firstOrNull { it !in excluded }
 
             return SchemaMapping(
                 nameCol = nameCol,
@@ -139,6 +171,11 @@ fun LeadRow.displayValue(col: String?): String {
     return fields[col]?.trim().orEmpty()
 }
 
+fun LeadRow.rawValue(col: String?): String {
+    if (col == null) return ""
+    return fields[col].orEmpty()
+}
+
 fun LeadRow.initials(nameCol: String?): String {
     val raw = displayValue(nameCol).ifBlank { "SF" }
     val parts = raw.split(" ").filter { it.isNotBlank() }
@@ -147,4 +184,23 @@ fun LeadRow.initials(nameCol: String?): String {
         raw.length >= 2 -> raw.take(2).uppercase()
         else -> raw.uppercase()
     }
+}
+
+/**
+ * Exact Last Call timestamp format requested: "02:45 PM, 24 Nov 2026" (hh:mm a, dd MMM yyyy).
+ */
+fun formatLastCallTimestamp(date: Date = Date()): String {
+    val sdf = SimpleDateFormat("hh:mm a, dd MMM yyyy", Locale.ENGLISH)
+    val formatted = sdf.format(date)
+    return formatted.replace(" am,", " AM,").replace(" pm,", " PM,")
+}
+
+/**
+ * Appends a new note on a new line keeping old text, with NO timestamp prefix and exact casing preserved.
+ */
+fun appendNotePreservingCase(existing: String, addition: String): String {
+    val cleanAddition = addition.trim()
+    if (cleanAddition.isEmpty()) return existing
+    val cleanExisting = existing.trimEnd()
+    return if (cleanExisting.isEmpty()) cleanAddition else "$cleanExisting\n$cleanAddition"
 }
