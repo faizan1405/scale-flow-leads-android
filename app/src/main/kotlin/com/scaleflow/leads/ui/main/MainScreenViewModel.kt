@@ -38,79 +38,98 @@ data class LeadsUiState(
     val schema: SchemaMapping = SchemaMapping.detect(emptyList()),
     val activeTab: BottomTab = BottomTab.LEADS,
     val detailLeadRowIndex: Int? = null,
-    val followUpLeadRowIndex: Int? = null,
+    val postCallLeadRowIndex: Int? = null,
     val searchQuery: String = "",
-    val selectedFilter: String = "All",
+    val selectedStatusFilter: String = "All",
+    val selectedAssigneeFilter: String = "All",
     val isSyncing: Boolean = false,
     val isSaving: Boolean = false,
     val lastSyncedTime: String = "",
     val errorMessage: String? = null,
     val snackbarMessage: String? = null,
-    val showAddLeadSheet: Boolean = false,
     val showEditAllSheet: Boolean = false,
     val showLogsDialog: Boolean = false,
-    val confirmCallLead: LeadRow? = null,
     val availableUpdate: AvailableUpdate? = null,
     val isCheckingUpdate: Boolean = false,
     val isDownloadingUpdate: Boolean = false,
     val downloadProgress: Float = 0f,
-    val currentVersion: String = "1.1.0",
+    val currentVersion: String = "1.2.0",
     val logs: List<SyncLogEntry> = emptyList()
 ) {
     val detailLead: LeadRow?
         get() = detailLeadRowIndex?.let { idx -> payload.rows.firstOrNull { it.rowIndex == idx } }
 
-    val followUpLead: LeadRow?
-        get() = followUpLeadRowIndex?.let { idx -> payload.rows.firstOrNull { it.rowIndex == idx } }
+    val postCallLead: LeadRow?
+        get() = postCallLeadRowIndex?.let { idx -> payload.rows.firstOrNull { it.rowIndex == idx } }
 
-    val filterChips: List<String>
+    val statusFilterOptions: List<String>
         get() {
             val fromSheet = payload.rows
                 .map { it.displayValue(schema.statusCol) }
                 .filter { it.isNotBlank() }
                 .distinct()
-            val preset = listOf("All", "Today", "Follow-up", "Assigned")
-            return (preset + fromSheet).distinct()
+            return (listOf("All", "Today") + fromSheet).distinct()
         }
 
-    val statusOptions: List<String>
+    val assigneeFilterOptions: List<String>
         get() {
             val fromSheet = payload.rows
-                .map { it.displayValue(schema.statusCol) }
+                .map { it.displayValue(schema.assignedCol) }
                 .filter { it.isNotBlank() }
                 .distinct()
-            val defaults = listOf("Follow-up", "New", "Qualified", "Hot Lead", "Enquiry", "Done", "Lost")
-            return (fromSheet + defaults).distinct()
+                .sorted()
+            return listOf("All") + fromSheet + listOf("Unassigned")
         }
+
+    val activeNoteColumn: String?
+        get() {
+            val saved = config.preferredNoteColumn
+            if (saved.isNotBlank() && saved in schema.allHeaders && !schema.isLockedColumn(saved)) {
+                return saved
+            }
+            return schema.notesCol ?: schema.noteColumnOptions.firstOrNull()
+        }
+
+    fun applyFilters(source: List<LeadRow>): List<LeadRow> {
+        val q = searchQuery.trim().lowercase()
+        val filtered = source.filter { row ->
+            val matchesQuery = if (q.isEmpty()) true else {
+                row.fields.values.any { it.lowercase().contains(q) }
+            }
+            val statusVal = row.displayValue(schema.statusCol)
+            val followVal = row.displayValue(schema.followUpCol)
+            val matchesStatus = when (selectedStatusFilter) {
+                "All" -> true
+                "Today" -> followVal.contains("today", ignoreCase = true) ||
+                    statusVal.contains("today", ignoreCase = true)
+                else -> statusVal.equals(selectedStatusFilter, ignoreCase = true)
+            }
+            val assignedVal = row.displayValue(schema.assignedCol)
+            val matchesAssignee = when (selectedAssigneeFilter) {
+                "All" -> true
+                "Unassigned" -> assignedVal.isBlank()
+                else -> assignedVal.equals(selectedAssigneeFilter, ignoreCase = true)
+            }
+            matchesQuery && matchesStatus && matchesAssignee
+        }
+        return when (config.sortBy) {
+            "Name (A-Z)" -> filtered.sortedBy { it.displayValue(schema.nameCol).lowercase() }
+            "Follow-up date" -> filtered.sortedByDescending {
+                it.displayValue(schema.followUpCol).isNotBlank()
+            }
+            "Last Call" -> filtered.sortedByDescending {
+                it.displayValue(schema.lastCallCol).isNotBlank()
+            }
+            else -> filtered
+        }
+    }
 
     val filteredLeads: List<LeadRow>
-        get() {
-            val q = searchQuery.trim().lowercase()
-            val base = payload.rows.filter { row ->
-                val matchesQuery = if (q.isEmpty()) true else {
-                    row.fields.values.any { it.lowercase().contains(q) }
-                }
-                val statusVal = row.displayValue(schema.statusCol)
-                val followVal = row.displayValue(schema.followUpCol)
-                val assignedVal = row.displayValue(schema.assignedCol)
-                val matchesFilter = when (selectedFilter) {
-                    "All" -> true
-                    "Today" -> followVal.contains("today", ignoreCase = true) ||
-                        statusVal.contains("today", ignoreCase = true)
-                    "Follow-up" -> followVal.isNotBlank() &&
-                        !followVal.equals("lost", ignoreCase = true) &&
-                        !followVal.equals("done", ignoreCase = true)
-                    "Assigned" -> assignedVal.isNotBlank()
-                    else -> statusVal.equals(selectedFilter, ignoreCase = true)
-                }
-                matchesQuery && matchesFilter
-            }
-            return sortRows(base)
-        }
+        get() = applyFilters(payload.rows)
 
-    val followUpLeads: List<LeadRow>
+    val filteredFollowUps: List<LeadRow>
         get() {
-            val list = payload.rows.filter { row ->
+            val base = payload.rows.filter { row ->
                 val follow = row.displayValue(schema.followUpCol)
                 val status = row.displayValue(schema.statusCol)
                 (follow.isNotBlank() && !follow.equals("lost", ignoreCase = true)) ||
@@ -118,22 +137,11 @@ data class LeadsUiState(
                     status.contains("qualified", ignoreCase = true) ||
                     status.contains("hot", ignoreCase = true)
             }
-            return sortRows(list)
+            return applyFilters(base)
         }
 
-    val calledLeads: List<LeadRow>
-        get() = payload.rows.filter { it.displayValue(schema.lastCallCol).isNotBlank() }
-
-    private fun sortRows(rows: List<LeadRow>): List<LeadRow> = when (config.sortBy) {
-        "Name (A-Z)" -> rows.sortedBy { it.displayValue(schema.nameCol).lowercase() }
-        "Follow-up date (earliest first)" -> rows.sortedByDescending {
-            it.displayValue(schema.followUpCol).isNotBlank()
-        }
-        "Last Call (newest first)" -> rows.sortedByDescending {
-            it.displayValue(schema.lastCallCol).isNotBlank()
-        }
-        else -> rows
-    }
+    val filteredCalls: List<LeadRow>
+        get() = applyFilters(payload.rows.filter { it.displayValue(schema.lastCallCol).isNotBlank() })
 }
 
 class MainScreenViewModel(application: Application) : AndroidViewModel(application) {
@@ -174,7 +182,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         if (calledRowIdx != null) {
             pendingCallRowIndex = null
             if (_uiState.value.config.autoOpenNotesAfterCall) {
-                _uiState.update { it.copy(followUpLeadRowIndex = calledRowIdx) }
+                _uiState.update { it.copy(postCallLeadRowIndex = calledRowIdx) }
             }
         }
         if (_uiState.value.config.isConnected && !_uiState.value.config.demoMode) {
@@ -191,40 +199,25 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
             it.copy(
                 activeTab = tab,
                 detailLeadRowIndex = null,
-                followUpLeadRowIndex = null
+                postCallLeadRowIndex = null
             )
         }
     }
 
     fun openLeadDetails(rowIndex: Int) {
-        _uiState.update { it.copy(detailLeadRowIndex = rowIndex, followUpLeadRowIndex = null) }
+        _uiState.update { it.copy(detailLeadRowIndex = rowIndex, postCallLeadRowIndex = null) }
     }
 
     fun closeLeadDetails() {
         _uiState.update { it.copy(detailLeadRowIndex = null) }
     }
 
-    fun openUpdateFollowUp(rowIndex: Int) {
-        _uiState.update { it.copy(followUpLeadRowIndex = rowIndex) }
+    fun openPostCallNote(rowIndex: Int) {
+        _uiState.update { it.copy(postCallLeadRowIndex = rowIndex) }
     }
 
-    fun closeUpdateFollowUp() {
-        _uiState.update { it.copy(followUpLeadRowIndex = null) }
-    }
-
-    fun requestCall(lead: LeadRow, onProceedToDial: (String) -> Unit) {
-        val phone = lead.displayValue(_uiState.value.schema.phoneCol)
-        if (phone.isBlank()) return
-        if (_uiState.value.config.confirmBeforeCall) {
-            _uiState.update { it.copy(confirmCallLead = lead) }
-        } else {
-            markLeadCalled(lead.rowIndex)
-            onProceedToDial(phone)
-        }
-    }
-
-    fun dismissConfirmCall() {
-        _uiState.update { it.copy(confirmCallLead = null) }
+    fun closePostCallNote() {
+        _uiState.update { it.copy(postCallLeadRowIndex = null) }
     }
 
     fun markLeadCalled(rowIndex: Int) {
@@ -232,16 +225,13 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         addLog("INFO", "Dialed lead row #$rowIndex")
     }
 
-    fun onSearchChanged(query: String) {
-        _uiState.update { it.copy(searchQuery = query) }
+    fun onSearchChanged(query: String) = _uiState.update { it.copy(searchQuery = query) }
+    fun onStatusFilterSelected(status: String) = _uiState.update { it.copy(selectedStatusFilter = status) }
+    fun onAssigneeFilterSelected(assignee: String) = _uiState.update { it.copy(selectedAssigneeFilter = assignee) }
+    fun clearAllFilters() = _uiState.update {
+        it.copy(searchQuery = "", selectedStatusFilter = "All", selectedAssigneeFilter = "All")
     }
 
-    fun onFilterSelected(filter: String) {
-        _uiState.update { it.copy(selectedFilter = filter) }
-    }
-
-    fun openAddLead() = _uiState.update { it.copy(showAddLeadSheet = true) }
-    fun dismissAddLead() = _uiState.update { it.copy(showAddLeadSheet = false) }
     fun openEditAllSheet() = _uiState.update { it.copy(showEditAllSheet = true) }
     fun dismissEditAllSheet() = _uiState.update { it.copy(showEditAllSheet = false) }
     fun openLogsDialog() = _uiState.update { it.copy(showLogsDialog = true) }
@@ -249,10 +239,11 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
     fun clearSnackbar() = _uiState.update { it.copy(snackbarMessage = null) }
 
     fun updateTheme(dark: Boolean) = updateConfig { it.copy(darkTheme = dark) }
-    fun updateWhatsAppTemplate(msg: String) = updateConfig { it.copy(defaultWhatsAppMessage = msg) }
-    fun updateConfirmBeforeCall(enabled: Boolean) = updateConfig { it.copy(confirmBeforeCall = enabled) }
+    fun updateFollowUpWhatsAppMsg(msg: String) = updateConfig { it.copy(followUpWhatsAppMessage = msg) }
+    fun updatePortfolioWhatsAppMsg(msg: String) = updateConfig { it.copy(portfolioWhatsAppMessage = msg) }
     fun updateAutoOpenNotes(enabled: Boolean) = updateConfig { it.copy(autoOpenNotesAfterCall = enabled) }
     fun updateSortBy(sort: String) = updateConfig { it.copy(sortBy = sort) }
+    fun updatePreferredNoteColumn(col: String) = updateConfig { it.copy(preferredNoteColumn = col) }
 
     private fun updateConfig(transform: (AppConfig) -> AppConfig) {
         val updated = transform(_uiState.value.config).copy(selectedSheet = "Leads ")
@@ -281,49 +272,60 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
             }.onFailure { err ->
                 addLog("ERROR", "Sync failed: ${err.message}")
                 _uiState.update {
-                    it.copy(
-                        isSyncing = false,
-                        errorMessage = err.message ?: "Sync failed"
-                    )
+                    it.copy(isSyncing = false, errorMessage = err.message ?: "Sync failed")
                 }
             }
         }
     }
 
-    fun markCalledNow(rowIndex: Int) {
+    /**
+     * Instant 1-tap follow-up date update directly from Calendar DatePickerDialog.
+     */
+    fun saveInstantFollowUpDate(rowIndex: Int, formattedDate: String) {
         val state = _uiState.value
-        val lastCallCol = state.schema.lastCallCol
-        if (lastCallCol == null) {
-            _uiState.update { it.copy(snackbarMessage = "Marked called") }
+        val followCol = state.schema.followUpCol
+        if (followCol == null) {
+            _uiState.update { it.copy(snackbarMessage = "No Follow-up column found in Sheet") }
             return
         }
-        val stamp = SimpleDateFormat("dd MMM, hh:mm a", Locale.getDefault()).format(Date())
-        saveLeadEdits(rowIndex, mapOf(lastCallCol to stamp), closeSheet = false, successMsg = "Marked called ($stamp)")
+        val fields = mutableMapOf(followCol to formattedDate)
+        state.schema.lastCallCol?.let {
+            fields[it] = SimpleDateFormat("dd MMM yyyy", Locale.getDefault()).format(Date())
+        }
+        saveLeadEdits(
+            rowIndex = rowIndex,
+            updatedFields = fields,
+            closeSheet = false,
+            successMsg = "Follow-up set to $formattedDate"
+        )
     }
 
-    fun saveCallerNoteOnly(rowIndex: Int, noteText: String) {
+    fun saveCallerNote(rowIndex: Int, targetColumn: String?, noteText: String, newStatus: String? = null) {
         val state = _uiState.value
-        if (noteText.isBlank()) return
-        val targetCol = state.schema.callerNotesCol ?: state.schema.notesCol
+        val safeCol = targetColumn?.takeIf { !state.schema.isLockedColumn(it) }
+            ?: state.activeNoteColumn
+        if (noteText.isBlank() && newStatus.isNullOrBlank()) return
+
         viewModelScope.launch {
             _uiState.update { it.copy(isSaving = true) }
             val result = repository.appendCallNote(
                 config = state.config,
                 currentPayload = state.payload,
                 rowIndex = rowIndex,
-                noteColumn = targetCol,
+                noteColumn = safeCol,
                 noteText = noteText,
-                statusColumn = null,
-                statusValue = null
+                statusColumn = state.schema.statusCol,
+                statusValue = newStatus
             )
             result.onSuccess { updated ->
-                addLog("OK", "Saved caller note for row #$rowIndex")
+                addLog("OK", "Saved note to '${safeCol ?: "Sheet"}' for row #$rowIndex")
                 _uiState.update {
                     it.copy(
                         payload = updated,
                         isSaving = false,
+                        postCallLeadRowIndex = null,
                         lastSyncedTime = formatShortTime(),
-                        snackbarMessage = "Caller note synced to Sheet"
+                        snackbarMessage = "Saved to ${safeCol ?: "Sheet"}"
                     )
                 }
             }.onFailure { err ->
@@ -335,73 +337,9 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    fun saveFollowUpUpdate(
-        rowIndex: Int,
-        followUpDate: String,
-        followUpTime: String,
-        status: String,
-        callerNote: String
-    ) {
-        val state = _uiState.value
-        val schema = state.schema
-        val fields = mutableMapOf<String, String>()
-
-        val combinedFollowUp = listOf(followUpDate.trim(), followUpTime.trim())
-            .filter { it.isNotBlank() }
-            .joinToString(", ")
-
-        if (schema.followUpCol != null && combinedFollowUp.isNotBlank()) {
-            fields[schema.followUpCol] = combinedFollowUp
-        }
-        if (schema.statusCol != null && status.isNotBlank()) {
-            fields[schema.statusCol] = status
-        }
-        if (schema.lastCallCol != null) {
-            fields[schema.lastCallCol] = SimpleDateFormat("dd MMM, hh:mm a", Locale.getDefault()).format(Date())
-        }
-
-        viewModelScope.launch {
-            _uiState.update { it.copy(isSaving = true) }
-            var currentPayload = state.payload
-
-            if (fields.isNotEmpty()) {
-                val updateRes = repository.updateLead(state.config, currentPayload, rowIndex, fields)
-                updateRes.onSuccess { currentPayload = it }.onFailure { err ->
-                    addLog("ERROR", "Follow-up update failed: ${err.message}")
-                    _uiState.update { it.copy(isSaving = false, snackbarMessage = "Update failed: ${err.message}") }
-                    return@launch
-                }
-            }
-
-            if (callerNote.isNotBlank()) {
-                val noteCol = schema.callerNotesCol ?: schema.notesCol
-                val noteRes = repository.appendCallNote(
-                    config = state.config,
-                    currentPayload = currentPayload,
-                    rowIndex = rowIndex,
-                    noteColumn = noteCol,
-                    noteText = callerNote,
-                    statusColumn = null,
-                    statusValue = null
-                )
-                noteRes.onSuccess { currentPayload = it }.onFailure { err ->
-                    addLog("ERROR", "Caller note failed: ${err.message}")
-                }
-            }
-
-            addLog("OK", "Updated follow-up for row #$rowIndex ($status)")
-            _uiState.update {
-                it.copy(
-                    payload = currentPayload,
-                    isSaving = false,
-                    followUpLeadRowIndex = null,
-                    lastSyncedTime = formatShortTime(),
-                    snackbarMessage = "Follow-up & notes synced"
-                )
-            }
-        }
-    }
-
+    /**
+     * Updates lead fields while strictly enforcing read-only Name & Phone Number protection.
+     */
     fun saveLeadEdits(
         rowIndex: Int,
         updatedFields: Map<String, String>,
@@ -409,11 +347,17 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         successMsg: String = "Lead synced to Google Sheet"
     ) {
         val state = _uiState.value
+        val sanitized = updatedFields.filterKeys { !state.schema.isLockedColumn(it) }
+        if (sanitized.isEmpty()) {
+            _uiState.update { it.copy(showEditAllSheet = false) }
+            return
+        }
+
         viewModelScope.launch {
             _uiState.update { it.copy(isSaving = true) }
-            val result = repository.updateLead(state.config, state.payload, rowIndex, updatedFields)
+            val result = repository.updateLead(state.config, state.payload, rowIndex, sanitized)
             result.onSuccess { newPayload ->
-                addLog("OK", "Updated row #$rowIndex")
+                addLog("OK", "Updated row #$rowIndex (${sanitized.keys.joinToString()})")
                 _uiState.update {
                     it.copy(
                         payload = newPayload,
@@ -432,31 +376,6 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    fun addNewLead(fields: Map<String, String>) {
-        val state = _uiState.value
-        viewModelScope.launch {
-            _uiState.update { it.copy(isSaving = true) }
-            val result = repository.addLead(state.config, state.payload, fields)
-            result.onSuccess { newPayload ->
-                addLog("OK", "Added new lead to Sheet")
-                _uiState.update {
-                    it.copy(
-                        payload = newPayload,
-                        isSaving = false,
-                        showAddLeadSheet = false,
-                        lastSyncedTime = formatShortTime(),
-                        snackbarMessage = "New lead added to Google Sheet"
-                    )
-                }
-            }.onFailure { err ->
-                addLog("ERROR", "Add lead failed: ${err.message}")
-                _uiState.update {
-                    it.copy(isSaving = false, snackbarMessage = "Add failed: ${err.message}")
-                }
-            }
-        }
-    }
-
     fun checkForAppUpdate(silent: Boolean = false) {
         val repo = _uiState.value.config.githubRepo
         if (repo.isBlank()) return
@@ -464,13 +383,13 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
             if (!silent) _uiState.update { it.copy(isCheckingUpdate = true) }
             val result = updater.checkForUpdate(repo)
             result.onSuccess { update ->
-                if (update != null) addLog("INFO", "Update v${update.version} available on GitHub")
+                if (update != null) addLog("INFO", "Update v${update.version} available")
                 _uiState.update {
                     it.copy(
                         isCheckingUpdate = false,
                         availableUpdate = update,
                         snackbarMessage = if (!silent) {
-                            if (update != null) "Update v${update.version} available!" else "You're on the latest version (v${it.currentVersion})"
+                            if (update != null) "Update v${update.version} available!" else "Up to date (v${it.currentVersion})"
                         } else it.snackbarMessage
                     )
                 }
@@ -494,10 +413,10 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
                 _uiState.update { it.copy(downloadProgress = progress) }
             }
             result.onSuccess {
-                addLog("OK", "Downloaded v${update.version} installer")
+                addLog("OK", "Downloaded v${update.version}")
                 _uiState.update { it.copy(isDownloadingUpdate = false) }
             }.onFailure { err ->
-                addLog("ERROR", "Update download failed: ${err.message}")
+                addLog("ERROR", "Download failed: ${err.message}")
                 _uiState.update {
                     it.copy(isDownloadingUpdate = false, snackbarMessage = "Download failed: ${err.message}")
                 }
@@ -512,7 +431,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
                 val intervalSec = _uiState.value.config.autoSyncSeconds.coerceIn(5, 300)
                 delay(intervalSec * 1000L)
                 val s = _uiState.value
-                val editing = s.followUpLeadRowIndex != null || s.showAddLeadSheet || s.showEditAllSheet
+                val editing = s.postCallLeadRowIndex != null || s.showEditAllSheet
                 if (isForeground && !editing && !s.isSaving && s.config.isConnected && !s.config.demoMode) {
                     refreshLeads(silent = true)
                 }

@@ -33,7 +33,7 @@ data class MutationResponse(
 @Serializable
 data class SyncLogEntry(
     val timestamp: String,
-    val level: String, // "INFO", "OK", "ERROR"
+    val level: String,
     val message: String
 )
 
@@ -46,10 +46,11 @@ data class AppConfig(
     val demoMode: Boolean = false,
     val githubRepo: String = DEFAULT_GITHUB_REPO,
     val darkTheme: Boolean = false,
-    val defaultWhatsAppMessage: String = "Hi {{name}}, thanks for your interest. Let me know a convenient time to connect.",
-    val confirmBeforeCall: Boolean = false,
+    val followUpWhatsAppMessage: String = "Hi {{name}}, we are following up regarding the website. Let me know a convenient time to connect.",
+    val portfolioWhatsAppMessage: String = "Hi {{name}}, here is our website portfolio and recent work. Let us know what you think!",
     val autoOpenNotesAfterCall: Boolean = true,
-    val sortBy: String = "Sheet order"
+    val sortBy: String = "Sheet order",
+    val preferredNoteColumn: String = ""
 ) {
     val isConnected: Boolean
         get() = scriptUrl.trim().startsWith("https://")
@@ -67,13 +68,29 @@ data class SchemaMapping(
     val websiteCol: String?,
     val statusCol: String?,
     val notesCol: String?,
-    val callerNotesCol: String?,
     val followUpCol: String?,
     val lastCallCol: String?,
     val assignedCol: String?,
     val dateCol: String?,
     val allHeaders: List<String>
 ) {
+    /**
+     * Columns that are locked (Name and Phone Number) and can only be edited in Google Sheets.
+     */
+    fun isLockedColumn(header: String): Boolean {
+        return header == nameCol || header == phoneCol
+    }
+
+    /**
+     * Candidate columns where caller notes can be written (excludes locked & metadata columns).
+     */
+    val noteColumnOptions: List<String>
+        get() {
+            val excluded = setOfNotNull(nameCol, phoneCol, dateCol, lastCallCol, statusCol, assignedCol)
+            val candidates = allHeaders.filter { it !in excluded }
+            return candidates.ifEmpty { allHeaders.filter { !isLockedColumn(it) } }
+        }
+
     companion object {
         fun detect(headers: List<String>): SchemaMapping {
             fun findFirst(vararg keywords: String): String? {
@@ -98,11 +115,8 @@ data class SchemaMapping(
             val assignedCol = findFirst("assined to", "assigned to", "assigned", "owner", "caller")
             val dateCol = findFirst("date", "created", "added")
 
-            // Existing sheet note vs separate caller notes
-            val notesCol = findFirst("faizan", "existing note", "notes", "note", "remarks", "comment", "summary")
+            val notesCol = findFirst("caller notes", "call notes", "notes", "note", "remarks", "comment", "summary", "faizan")
                 ?: followUpCol
-            val callerNotesCol = findFirst("caller notes", "saurabh", "call notes", "notes", "note", "follow-ups")
-                ?: notesCol
 
             return SchemaMapping(
                 nameCol = nameCol,
@@ -110,7 +124,6 @@ data class SchemaMapping(
                 websiteCol = websiteCol,
                 statusCol = statusCol,
                 notesCol = notesCol,
-                callerNotesCol = callerNotesCol,
                 followUpCol = followUpCol,
                 lastCallCol = lastCallCol,
                 assignedCol = assignedCol,
