@@ -8,6 +8,7 @@ import com.scaleflow.leads.data.AppConfig
 import com.scaleflow.leads.data.AppUpdater
 import com.scaleflow.leads.data.AvailableUpdate
 import com.scaleflow.leads.data.CallLogHelper
+import com.scaleflow.leads.data.FollowUpBucket
 import com.scaleflow.leads.data.HistoryEntry
 import com.scaleflow.leads.data.LeadRepository
 import com.scaleflow.leads.data.LeadRow
@@ -15,9 +16,11 @@ import com.scaleflow.leads.data.SchemaMapping
 import com.scaleflow.leads.data.SheetPayload
 import com.scaleflow.leads.data.SyncLogEntry
 import com.scaleflow.leads.data.appendNotePreservingCase
+import com.scaleflow.leads.data.classifyFollowUpDate
 import com.scaleflow.leads.data.displayValue
 import com.scaleflow.leads.data.formatLastCallTimestamp
 import com.scaleflow.leads.data.isTimestampFromDate
+import com.scaleflow.leads.data.parseFlexibleDate
 import com.scaleflow.leads.data.rawValue
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -95,6 +98,19 @@ object LeadFilterEngine {
             else -> filtered.sortedBy { it.rowIndex }
         }
     }
+}
+
+data class FollowUpSections(
+    val missed: List<LeadRow> = emptyList(),
+    val today: List<LeadRow> = emptyList(),
+    val tomorrow: List<LeadRow> = emptyList(),
+    val upcoming: List<LeadRow> = emptyList()
+) {
+    val allOrdered: List<LeadRow>
+        get() = missed + today + tomorrow + upcoming
+
+    val totalCount: Int
+        get() = missed.size + today.size + tomorrow.size + upcoming.size
 }
 
 data class LeadsUiState(
@@ -266,15 +282,31 @@ data class LeadsUiState(
             sortBy = config.sortBy
         )
 
-    val filteredFollowUps: List<LeadRow>
+    fun followUpBucketFor(lead: LeadRow): FollowUpBucket {
+        val raw = lead.displayValue(schema.followUpDateCol)
+        return classifyFollowUpDate(raw)
+    }
+
+    /**
+     * Count for the red badge on the bottom Follow-ups tab (Missed + Today follow-ups).
+     */
+    val urgentFollowUpCount: Int
+        get() = payload.rows.count { row ->
+            val b = followUpBucketFor(row)
+            b == FollowUpBucket.MISSED || b == FollowUpBucket.TODAY
+        }
+
+    /**
+     * Follow-ups tab grouped strictly by Follow up Date:
+     * 1. Missed (before today) -> Red
+     * 2. Today -> Green
+     * 3. Tomorrow -> Yellow
+     * 4. Upcoming (after tomorrow)
+     */
+    val followUpSections: FollowUpSections
         get() {
-            val base = payload.rows.filter { row ->
-                row.displayValue(schema.followUpCol).isNotBlank() ||
-                    row.displayValue(schema.statusCol).equals("Qualified", ignoreCase = true) ||
-                    row.displayValue(schema.statusCol).equals("Proposal sent", ignoreCase = true)
-            }
-            return LeadFilterEngine.filterAndSort(
-                rows = base,
+            val filteredAll = LeadFilterEngine.filterAndSort(
+                rows = payload.rows,
                 schema = schema,
                 searchQuery = searchQuery,
                 selectedStatusFilter = selectedStatusFilter,
@@ -282,6 +314,32 @@ data class LeadsUiState(
                 selectedFollowUpFilter = selectedFollowUpFilter,
                 callerProfile = config.callerProfile,
                 sortBy = config.sortBy
+            )
+
+            val missed = mutableListOf<LeadRow>()
+            val today = mutableListOf<LeadRow>()
+            val tomorrow = mutableListOf<LeadRow>()
+            val upcoming = mutableListOf<LeadRow>()
+
+            filteredAll.forEach { row ->
+                when (followUpBucketFor(row)) {
+                    FollowUpBucket.MISSED -> missed.add(row)
+                    FollowUpBucket.TODAY -> today.add(row)
+                    FollowUpBucket.TOMORROW -> tomorrow.add(row)
+                    FollowUpBucket.UPCOMING -> upcoming.add(row)
+                    FollowUpBucket.NONE -> Unit
+                }
+            }
+
+            fun sortByDateAsc(list: List<LeadRow>) = list.sortedBy {
+                parseFlexibleDate(it.displayValue(schema.followUpDateCol))?.time ?: Long.MAX_VALUE
+            }
+
+            return FollowUpSections(
+                missed = sortByDateAsc(missed),
+                today = today,
+                tomorrow = tomorrow,
+                upcoming = sortByDateAsc(upcoming)
             )
         }
 
@@ -548,25 +606,29 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
                 _uiState.update { it.copy(isSyncing = true, errorMessage = null) }
             }
 
-            val flush = repository.flushPendingQueue(config)
-            if (flush.flushedCount > 0) {
+            // Skip flush entirely if offline queue is empty so Refresh is as fast as possible!
+            val hasPending = repository.loadPendingOps().isNotEmpty()
+            val flush = if (hasPending) repository.flushPendingQueue(config) else null
+            if (flush != null && flush.flushedCount > 0) {
                 addLog("OK", "Flushed ${flush.flushedCount} offline item(s) to Sheet")
             }
 
             val result = repository.fetchLeads(config)
             result.onSuccess { payload ->
                 addLog("OK", "Synced ${payload.rows.size} leads + ${payload.history.size} history rows")
+                val remaining = flush?.remainingCount ?: repository.loadPendingOps().size
                 _uiState.update {
                     it.copy(
                         payload = payload,
                         schema = SchemaMapping.detect(payload.headers),
                         isSyncing = false,
-                        pendingSyncCount = flush.remainingCount,
+                        pendingSyncCount = remaining,
+                        todayCalledRowTimes = repository.loadTodayCalledRows(),
                         errorMessage = null,
                         lastSyncedTime = formatShortTime(),
                         snackbarMessage = when {
-                            flush.flushedCount > 0 -> "Synced ${flush.flushedCount} offline edit(s) · ${payload.rows.size} leads"
-                            showToast -> "Refreshed · ${payload.rows.size} leads synced"
+                            flush != null && flush.flushedCount > 0 -> "Synced ${flush.flushedCount} offline edit(s) · ${payload.rows.size} leads"
+                            showToast -> "Refreshed · ${payload.rows.size} leads"
                             else -> it.snackbarMessage
                         }
                     )

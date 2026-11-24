@@ -12,6 +12,7 @@ import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import java.util.zip.GZIPInputStream
 
 class SheetsApiClient {
 
@@ -111,9 +112,10 @@ class SheetsApiClient {
         val conn = (URL(urlString).openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
             instanceFollowRedirects = false
-            connectTimeout = 12_000
-            readTimeout = 18_000
+            connectTimeout = 10_000
+            readTimeout = 15_000
             setRequestProperty("Accept", "application/json")
+            setRequestProperty("Accept-Encoding", "gzip")
         }
         try {
             val code = conn.responseCode
@@ -138,10 +140,11 @@ class SheetsApiClient {
             requestMethod = "POST"
             doOutput = true
             instanceFollowRedirects = false
-            connectTimeout = 12_000
-            readTimeout = 18_000
+            connectTimeout = 10_000
+            readTimeout = 15_000
             setRequestProperty("Content-Type", "text/plain; charset=utf-8")
             setRequestProperty("Accept", "application/json")
+            setRequestProperty("Accept-Encoding", "gzip")
         }
         try {
             OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { writer ->
@@ -166,7 +169,12 @@ class SheetsApiClient {
     }
 
     private fun readBody(conn: HttpURLConnection, code: Int): String {
-        val stream = if (code in 200..299) conn.inputStream else (conn.errorStream ?: conn.inputStream)
+        val rawStream = if (code in 200..299) conn.inputStream else (conn.errorStream ?: conn.inputStream)
+        val stream = if ("gzip".equals(conn.contentEncoding, ignoreCase = true)) {
+            GZIPInputStream(rawStream)
+        } else {
+            rawStream
+        }
         return BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { it.readText() }
     }
 

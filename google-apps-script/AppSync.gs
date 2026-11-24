@@ -1,24 +1,23 @@
 /**
- * Scale Flow Leads — Google Sheets Real-Time Sync Bridge v1.5
+ * Scale Flow Leads — Google Sheets Fast Sync Bridge v1.6
  *
- * FEATURES:
- * - Reads Google Sheet Data Validation dropdown options (e.g. Arshi, Faizan, Saurabh, Open)
- *   even when 0 leads are assigned yet.
- * - Dynamically ignores hidden helper columns (like hidden col J) and supports unlimited future columns.
- * - Auto-creates a cleanly color-styled, permanent "History" tab logging every call duration,
- *   status change, follow-up update, date edit, and note.
+ * FAST REFRESH OPTIMIZATIONS:
+ * - Batch-reads ALL column Data Validation dropdowns in 1 single API call (instead of ~50 calls!).
+ * - Batch-writes row updates in 1 single setValues() call.
+ * - Sends latest 100 History rows for fast payloads.
+ * - Color-styled permanent "History" tab + unlimited future columns (skips hidden helper col J).
  *
- * HOW TO UPDATE YOUR EXISTING DEPLOYMENT (1 minute, keeps the SAME Web App URL):
- * 1. Open Extensions -> Apps Script -> click AppSync.gs.
- * 2. Replace everything in AppSync.gs with this file and press Ctrl + S.
- * 3. Click Deploy -> Manage deployments -> click the Edit (pencil) icon.
- * 4. Change Version to "New version" -> click Deploy.
+ * HOW TO UPDATE (1 minute — keeps your exact same Web App URL):
+ * 1. Open Google Sheet -> Extensions -> Apps Script -> click AppSync.gs.
+ * 2. Replace everything in AppSync.gs with this code and press Ctrl + S.
+ * 3. Click Deploy -> Manage deployments -> Edit (pencil) -> Version: "New version" -> Deploy.
  */
 
 const APP_SYNC_CONFIG = {
   API_KEY: "",
   DEFAULT_SHEET: "Leads ",
-  HISTORY_SHEET: "History"
+  HISTORY_SHEET: "History",
+  HISTORY_LIMIT: 100
 };
 
 function doGet(e) {
@@ -29,18 +28,17 @@ function doGet(e) {
     }
 
     const ss = SpreadsheetApp.getActiveSpreadsheet();
-    const sheetNames = ss.getSheets().map(function(s) { return s.getName(); });
-    const targetName = params.sheet || APP_SYNC_CONFIG.DEFAULT_SHEET || sheetNames[0];
-    const sheet = ss.getSheetByName(targetName) || ss.getSheets()[0];
+    const targetName = params.sheet || APP_SYNC_CONFIG.DEFAULT_SHEET;
+    const sheet = (targetName && ss.getSheetByName(targetName)) || ss.getSheets()[0];
 
-    const data = appSyncReadSheet_(sheet);
-    const history = appSyncReadHistory_(ss, 300);
+    const data = appSyncReadSheetFast_(sheet);
+    const history = appSyncReadHistory_(ss, APP_SYNC_CONFIG.HISTORY_LIMIT);
 
     return appSyncJson_({
       ok: true,
       spreadsheetName: ss.getName(),
       sheetName: sheet.getName(),
-      sheetNames: sheetNames,
+      sheetNames: [sheet.getName()],
       headers: data.headers,
       dropdownOptions: data.dropdownOptions,
       rows: data.rows,
@@ -64,9 +62,8 @@ function doPost(e) {
     }
 
     const ss = SpreadsheetApp.getActiveSpreadsheet();
-    const sheetNames = ss.getSheets().map(function(s) { return s.getName(); });
-    const targetName = body.sheet || APP_SYNC_CONFIG.DEFAULT_SHEET || sheetNames[0];
-    const sheet = ss.getSheetByName(targetName) || ss.getSheets()[0];
+    const targetName = body.sheet || APP_SYNC_CONFIG.DEFAULT_SHEET;
+    const sheet = (targetName && ss.getSheetByName(targetName)) || ss.getSheets()[0];
     const action = body.action || "update";
 
     if (action === "logHistory") {
@@ -81,15 +78,10 @@ function doPost(e) {
         newValue: body.newValue || "",
         callDuration: body.callDuration || ""
       });
-      SpreadsheetApp.flush();
-      return appSyncJson_({
-        ok: true,
-        action: "logHistory",
-        updatedAt: new Date().toISOString()
-      });
+      return appSyncJson_({ ok: true, action: "logHistory", updatedAt: new Date().toISOString() });
     }
 
-    const colInfo = appSyncGetVisibleColumns_(sheet);
+    const colInfo = appSyncGetVisibleColumnsFast_(sheet);
     if (colInfo.headers.length === 0) {
       return appSyncJson_({ ok: false, error: "Sheet has no header row in row 1" });
     }
@@ -136,13 +128,11 @@ function doPost(e) {
         }
       });
 
-      // Single batch write (much faster than writing cell-by-cell!)
       if (rowDirty) {
         rowRange.setValues([existingValues]);
       }
       historyToLog.forEach(function(h) { appSyncAppendHistoryRow_(ss, h); });
 
-      SpreadsheetApp.flush();
       return appSyncJson_({
         ok: true,
         action: "update",
@@ -164,30 +154,34 @@ function appSyncAuthorized_(key) {
   return String(key || "") === String(APP_SYNC_CONFIG.API_KEY);
 }
 
-function appSyncGetVisibleColumns_(sheet) {
+function appSyncGetVisibleColumnsFast_(sheet) {
   const lastCol = sheet.getLastColumn();
   if (lastCol === 0) return { headers: [], columns: [] };
   const rawHeaders = sheet.getRange(1, 1, 1, lastCol).getDisplayValues()[0];
   const headers = [];
   const columns = [];
   for (let c = 1; c <= lastCol; c++) {
-    if (sheet.isColumnHiddenByUser(c)) continue;
     const h = String(rawHeaders[c - 1] || "").trim();
     if (!h) continue;
+    if (sheet.isColumnHiddenByUser(c)) continue;
     headers.push(h);
     columns.push({ colIndex: c, header: h });
   }
   return { headers: headers, columns: columns };
 }
 
-function appSyncReadDropdownOptions_(sheet, columns) {
+/**
+ * Single batched getDataValidations() call for the entire row 2 (48x fewer RPCs!).
+ */
+function appSyncReadDropdownOptionsFast_(sheet, columns, lastCol) {
   const result = {};
-  const maxCheckRow = Math.min(Math.max(sheet.getLastRow(), 2), 5);
-  columns.forEach(function(col) {
-    for (let r = 2; r <= maxCheckRow; r++) {
+  if (sheet.getLastRow() < 2 || lastCol === 0) return result;
+  try {
+    const rules = sheet.getRange(2, 1, 1, lastCol).getDataValidations()[0];
+    columns.forEach(function(col) {
+      const rule = rules[col.colIndex - 1];
+      if (!rule) return;
       try {
-        const rule = sheet.getRange(r, col.colIndex).getDataValidation();
-        if (!rule) continue;
         const type = rule.getCriteriaType();
         const args = rule.getCriteriaValues();
         let vals = [];
@@ -202,46 +196,50 @@ function appSyncReadDropdownOptions_(sheet, columns) {
             }
           }
         }
-        if (vals.length > 0) {
-          result[col.header] = vals;
-          break;
-        }
+        if (vals.length > 0) result[col.header] = vals;
       } catch (_) {}
-    }
-  });
+    });
+  } catch (_) {}
   return result;
 }
 
-function appSyncReadSheet_(sheet) {
+function appSyncReadSheetFast_(sheet) {
   const lastRow = sheet.getLastRow();
   const lastCol = sheet.getLastColumn();
   if (lastRow === 0 || lastCol === 0) {
     return { headers: [], dropdownOptions: {}, rows: [] };
   }
 
-  const colInfo = appSyncGetVisibleColumns_(sheet);
-  const dropdownOptions = appSyncReadDropdownOptions_(sheet, colInfo.columns);
   const allValues = sheet.getRange(1, 1, lastRow, lastCol).getDisplayValues();
+  const rawHeaders = allValues[0];
+  const headers = [];
+  const columns = [];
+  for (let c = 1; c <= lastCol; c++) {
+    const h = String(rawHeaders[c - 1] || "").trim();
+    if (!h) continue;
+    if (sheet.isColumnHiddenByUser(c)) continue;
+    headers.push(h);
+    columns.push({ colIndex: c, header: h });
+  }
+
+  const dropdownOptions = appSyncReadDropdownOptionsFast_(sheet, columns, lastCol);
   const rows = [];
 
   for (let r = 1; r < allValues.length; r++) {
     const rowValues = allValues[r];
     const fields = {};
     let hasAny = false;
-    colInfo.columns.forEach(function(col) {
+    for (let k = 0; k < columns.length; k++) {
+      const col = columns[k];
       const v = rowValues[col.colIndex - 1] || "";
-      if (String(v).trim() !== "") hasAny = true;
+      if (v !== "") hasAny = true;
       fields[col.header] = v;
-    });
+    }
     if (!hasAny) continue;
     rows.push({ rowIndex: r + 1, fields: fields });
   }
 
-  return {
-    headers: colInfo.headers,
-    dropdownOptions: dropdownOptions,
-    rows: rows
-  };
+  return { headers: headers, dropdownOptions: dropdownOptions, rows: rows };
 }
 
 function appSyncEnsureHistorySheet_(ss) {
@@ -293,7 +291,6 @@ function appSyncAppendHistoryRow_(ss, entry) {
     entry.callDuration || ""
   ]);
 
-  // Color-code the newly added row cleanly by action & status
   const lastRow = hist.getLastRow();
   const rowRange = hist.getRange(lastRow, 1, 1, 10);
   const actionLower = String(entry.action || "").toLowerCase();
@@ -302,16 +299,16 @@ function appSyncAppendHistoryRow_(ss, entry) {
   let bg = "#F8FAFC";
   let actionFg = "#1E40AF";
   if (actionLower === "call") {
-    bg = "#DCFCE7"; // Soft green for phone calls
+    bg = "#DCFCE7";
     actionFg = "#166534";
   } else if (newValLower.indexOf("lost") !== -1) {
-    bg = "#FEE2E2"; // Soft red for Lost
+    bg = "#FEE2E2";
     actionFg = "#B91C1C";
   } else if (newValLower.indexOf("won") !== -1 || newValLower.indexOf("qualified") !== -1) {
-    bg = "#DBEAFE"; // Soft blue for Won / Qualified
+    bg = "#DBEAFE";
     actionFg = "#1D4ED8";
   } else if (newValLower.indexOf("proposal") !== -1 || newValLower.indexOf("follow") !== -1 || newValLower.indexOf("done") !== -1) {
-    bg = "#FEF3C7"; // Soft amber for Follow-up / Proposal
+    bg = "#FEF3C7";
     actionFg = "#B45309";
   }
 
@@ -323,7 +320,6 @@ function appSyncAppendHistoryRow_(ss, entry) {
     .setWrap(true)
     .setBorder(true, true, true, true, true, true, "#CBD5E1", SpreadsheetApp.BorderStyle.SOLID);
 
-  // Highlight the Action cell (col 6) with bold color
   hist.getRange(lastRow, 6).setFontWeight("bold").setFontColor(actionFg).setHorizontalAlignment("center");
   hist.getRange(lastRow, 3).setHorizontalAlignment("center");
   hist.setRowHeight(lastRow, 32);

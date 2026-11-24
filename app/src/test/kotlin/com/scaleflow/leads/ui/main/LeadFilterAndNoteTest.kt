@@ -1,8 +1,10 @@
 package com.scaleflow.leads.ui.main
 
+import com.scaleflow.leads.data.FollowUpBucket
 import com.scaleflow.leads.data.LeadRow
 import com.scaleflow.leads.data.SchemaMapping
 import com.scaleflow.leads.data.appendNotePreservingCase
+import com.scaleflow.leads.data.classifyFollowUpDate
 import com.scaleflow.leads.data.formatLastCallTimestamp
 import com.scaleflow.leads.data.isTimestampFromDate
 import org.junit.Assert.assertEquals
@@ -179,5 +181,19 @@ class LeadFilterAndNoteTest {
         assertFalse(fullSchema.noteColumnOptions.contains("Follow up Date"))
         assertFalse(fullSchema.noteColumnOptions.contains("Extra notes"))
         assertEquals(listOf("Faizan", "Saurabh", "Arshi"), fullSchema.noteColumnOptions)
+    }
+
+    @Test
+    fun followUpDateClassifiesMissedTodayTomorrowUpcoming() {
+        val nov24 = Calendar.getInstance().apply {
+            set(2026, Calendar.NOVEMBER, 24, 16, 0, 0)
+        }.time
+        assertEquals(FollowUpBucket.MISSED, classifyFollowUpDate("23-Nov-2026", nov24))
+        assertEquals(FollowUpBucket.MISSED, classifyFollowUpDate("10 Nov 2026", nov24))
+        assertEquals(FollowUpBucket.TODAY, classifyFollowUpDate("24-Nov-2026", nov24))
+        assertEquals(FollowUpBucket.TODAY, classifyFollowUpDate("24 Nov 2026", nov24))
+        assertEquals(FollowUpBucket.TOMORROW, classifyFollowUpDate("25-Nov-2026", nov24))
+        assertEquals(FollowUpBucket.UPCOMING, classifyFollowUpDate("28-Nov-2026", nov24))
+        assertEquals(FollowUpBucket.NONE, classifyFollowUpDate("", nov24))
     }
 }

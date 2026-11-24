@@ -244,6 +244,69 @@ fun isTimestampFromDate(timestamp: String, today: Date = Date()): Boolean {
 fun todayKey(date: Date = Date()): String =
     SimpleDateFormat("yyyy-MM-dd", Locale.US).format(date)
 
+enum class FollowUpBucket {
+    MISSED,
+    TODAY,
+    TOMORROW,
+    UPCOMING,
+    NONE
+}
+
+/**
+ * Parses a Follow up Date string (e.g. "24-Nov-2026", "24 Nov 2026", "2026-11-24", "24/11/2026")
+ * and classifies it relative to [today] into MISSED, TODAY, TOMORROW, UPCOMING, or NONE.
+ */
+fun classifyFollowUpDate(rawDate: String, today: Date = Date()): FollowUpBucket {
+    val parsed = parseFlexibleDate(rawDate) ?: return FollowUpBucket.NONE
+    val todayDay = startOfDayEpochDays(today)
+    val targetDay = startOfDayEpochDays(parsed)
+    val diff = targetDay - todayDay
+    return when {
+        diff < 0L -> FollowUpBucket.MISSED
+        diff == 0L -> FollowUpBucket.TODAY
+        diff == 1L -> FollowUpBucket.TOMORROW
+        else -> FollowUpBucket.UPCOMING
+    }
+}
+
+fun parseFlexibleDate(raw: String): Date? {
+    val clean = raw.trim().substringAfterLast(",").trim()
+    if (clean.isEmpty()) return null
+    val patterns = listOf(
+        "dd-MMM-yyyy",
+        "d-MMM-yyyy",
+        "dd MMM yyyy",
+        "d MMM yyyy",
+        "yyyy-MM-dd",
+        "dd/MM/yyyy",
+        "d/M/yyyy",
+        "dd-MM-yyyy",
+        "d-M-yyyy",
+        "MMM dd, yyyy",
+        "MMM d, yyyy"
+    )
+    for (pattern in patterns) {
+        try {
+            val sdf = SimpleDateFormat(pattern, Locale.ENGLISH).apply { isLenient = false }
+            val date = sdf.parse(clean)
+            if (date != null) return date
+        } catch (_: Exception) {
+        }
+    }
+    return null
+}
+
+private fun startOfDayEpochDays(date: Date): Long {
+    val cal = java.util.Calendar.getInstance().apply {
+        time = date
+        set(java.util.Calendar.HOUR_OF_DAY, 0)
+        set(java.util.Calendar.MINUTE, 0)
+        set(java.util.Calendar.SECOND, 0)
+        set(java.util.Calendar.MILLISECOND, 0)
+    }
+    return kotlin.math.round(cal.timeInMillis / 86_400_000.0).toLong()
+}
+
 fun appendNotePreservingCase(existing: String, addition: String): String {
     val cleanAddition = addition.trim()
     if (cleanAddition.isEmpty()) return existing

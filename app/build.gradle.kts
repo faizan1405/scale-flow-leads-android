@@ -23,8 +23,8 @@ android {
     applicationId = "com.scaleflow.leads"
     minSdk = 33
     targetSdk = 35
-    versionCode = 10
-    versionName = "1.5.4"
+    versionCode = 11
+    versionName = "1.6.0"
 
     val scriptUrl = secretProp("APPS_SCRIPT_URL", "")
     buildConfigField("String", "DEFAULT_SCRIPT_URL", "\"$scriptUrl\"")

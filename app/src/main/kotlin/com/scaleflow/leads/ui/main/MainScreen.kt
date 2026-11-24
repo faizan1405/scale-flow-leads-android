@@ -53,6 +53,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.Notes
 import androidx.compose.material.icons.automirrored.filled.Sort
+import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.CalendarToday
@@ -80,6 +81,8 @@ import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.WorkOutline
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -135,6 +138,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.scaleflow.leads.data.FollowUpBucket
 import com.scaleflow.leads.data.HistoryEntry
 import com.scaleflow.leads.data.LeadRow
 import com.scaleflow.leads.data.SchemaMapping
@@ -158,6 +162,9 @@ import java.util.Date
 import java.util.Locale
 
 private val PortfolioTeal = Color(0xFF0D9488)
+private val TomorrowYellow = Color(0xFFEAB308)
+private val TomorrowYellowBg = Color(0xFFFEF9C3)
+private val TomorrowYellowText = Color(0xFFA16207)
 
 @Composable
 fun MainScreen(viewModel: MainScreenViewModel) {
@@ -322,7 +329,25 @@ private fun HomeScaffold(
                 NavigationBarItem(
                     selected = state.activeTab == BottomTab.FOLLOW_UPS,
                     onClick = { viewModel.selectBottomTab(BottomTab.FOLLOW_UPS) },
-                    icon = { Icon(Icons.Default.DateRange, null) },
+                    icon = {
+                        BadgedBox(
+                            badge = {
+                                if (state.urgentFollowUpCount > 0) {
+                                    Badge(
+                                        containerColor = StatusRed,
+                                        contentColor = Color.White
+                                    ) {
+                                        Text(
+                                            text = if (state.urgentFollowUpCount > 99) "99+" else state.urgentFollowUpCount.toString(),
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+                            }
+                        ) {
+                            Icon(Icons.Default.DateRange, null)
+                        }
+                    },
                     label = { Text("Follow-ups") },
                     colors = NavigationBarItemDefaults.colors(
                         selectedIconColor = BrandBlue,
@@ -372,16 +397,20 @@ private fun HomeScaffold(
                     onWhatsAppPortfolio = onWhatsAppPortfolio
                 )
 
-                BottomTab.FOLLOW_UPS -> LeadsListTab(
-                    title = "Follow-ups",
-                    state = state,
-                    leads = state.filteredFollowUps,
-                    emptyTitle = "No follow-ups match your filters",
-                    viewModel = viewModel,
-                    onCall = onCallLead,
-                    onWhatsAppFollowUp = onWhatsAppFollowUp,
-                    onWhatsAppPortfolio = onWhatsAppPortfolio
-                )
+                BottomTab.FOLLOW_UPS -> {
+                    val sections = state.followUpSections
+                    LeadsListTab(
+                        title = "Follow-ups",
+                        state = state,
+                        leads = sections.allOrdered,
+                        followUpSections = sections,
+                        emptyTitle = "No scheduled follow-up dates found",
+                        viewModel = viewModel,
+                        onCall = onCallLead,
+                        onWhatsAppFollowUp = onWhatsAppFollowUp,
+                        onWhatsAppPortfolio = onWhatsAppPortfolio
+                    )
+                }
 
                 BottomTab.CALLS -> LeadsListTab(
                     title = "Today's Calls",
@@ -415,6 +444,7 @@ private fun LeadsListTab(
     title: String,
     state: LeadsUiState,
     leads: List<LeadRow>,
+    followUpSections: FollowUpSections? = null,
     emptyTitle: String,
     viewModel: MainScreenViewModel,
     onCall: (LeadRow) -> Unit,
@@ -450,7 +480,7 @@ private fun LeadsListTab(
                                 .background(BrandBlue),
                             contentAlignment = Alignment.Center
                         ) {
-                            Icon(Icons.Default.Call, null, tint = Color.White, modifier = Modifier.size(20.dp))
+                            Icon(Icons.AutoMirrored.Filled.TrendingUp, null, tint = Color.White, modifier = Modifier.size(21.dp))
                         }
                         Spacer(Modifier.width(10.dp))
                         Column {
@@ -774,19 +804,125 @@ private fun LeadsListTab(
                     contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 10.dp, bottom = 24.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    items(leads, key = { it.rowIndex }) { lead ->
-                        val dimAsRead = state.activeTab != BottomTab.CALLS && state.isLeadCalledToday(lead)
-                        LeadListCard(
-                            lead = lead,
-                            schema = state.schema,
-                            isDimmedAsCalledToday = dimAsRead,
-                            modifier = Modifier.animateItem(),
-                            onClick = { viewModel.openLeadDetails(lead.rowIndex, orderedIds) },
-                            onCall = { onCall(lead) },
-                            onWhatsAppFollowUp = { onWhatsAppFollowUp(lead) },
-                            onWhatsAppPortfolio = { onWhatsAppPortfolio(lead) },
-                            onQuickNote = { viewModel.openPostCallNote(lead.rowIndex) }
-                        )
+                    if (followUpSections != null) {
+                        // 1. Missed Follow-ups (Red)
+                        if (followUpSections.missed.isNotEmpty()) {
+                            item(key = "hdr_missed") {
+                                FollowUpSectionHeader(
+                                    title = "Missed Follow-ups (${followUpSections.missed.size})",
+                                    accentColor = StatusRed,
+                                    bgColor = StatusRedContainer,
+                                    textColor = StatusRed
+                                )
+                            }
+                            items(followUpSections.missed, key = { "m_${it.rowIndex}" }) { lead ->
+                                LeadListCard(
+                                    lead = lead,
+                                    schema = state.schema,
+                                    isDimmedAsCalledToday = state.isLeadCalledToday(lead),
+                                    followUpBucketOverride = FollowUpBucket.MISSED,
+                                    modifier = Modifier.animateItem(),
+                                    onClick = { viewModel.openLeadDetails(lead.rowIndex, orderedIds) },
+                                    onCall = { onCall(lead) },
+                                    onWhatsAppFollowUp = { onWhatsAppFollowUp(lead) },
+                                    onWhatsAppPortfolio = { onWhatsAppPortfolio(lead) },
+                                    onQuickNote = { viewModel.openPostCallNote(lead.rowIndex) }
+                                )
+                            }
+                        }
+
+                        // 2. Today's Follow-ups (Green)
+                        if (followUpSections.today.isNotEmpty()) {
+                            item(key = "hdr_today") {
+                                FollowUpSectionHeader(
+                                    title = "Today's Follow-ups (${followUpSections.today.size})",
+                                    accentColor = CallGreen,
+                                    bgColor = CallGreenContainer,
+                                    textColor = CallGreenDarkText
+                                )
+                            }
+                            items(followUpSections.today, key = { "t_${it.rowIndex}" }) { lead ->
+                                LeadListCard(
+                                    lead = lead,
+                                    schema = state.schema,
+                                    isDimmedAsCalledToday = state.isLeadCalledToday(lead),
+                                    followUpBucketOverride = FollowUpBucket.TODAY,
+                                    modifier = Modifier.animateItem(),
+                                    onClick = { viewModel.openLeadDetails(lead.rowIndex, orderedIds) },
+                                    onCall = { onCall(lead) },
+                                    onWhatsAppFollowUp = { onWhatsAppFollowUp(lead) },
+                                    onWhatsAppPortfolio = { onWhatsAppPortfolio(lead) },
+                                    onQuickNote = { viewModel.openPostCallNote(lead.rowIndex) }
+                                )
+                            }
+                        }
+
+                        // 3. Tomorrow's Follow-ups (Yellow!)
+                        if (followUpSections.tomorrow.isNotEmpty()) {
+                            item(key = "hdr_tomorrow") {
+                                FollowUpSectionHeader(
+                                    title = "Tomorrow's Follow-ups (${followUpSections.tomorrow.size})",
+                                    accentColor = TomorrowYellow,
+                                    bgColor = TomorrowYellowBg,
+                                    textColor = TomorrowYellowText
+                                )
+                            }
+                            items(followUpSections.tomorrow, key = { "tm_${it.rowIndex}" }) { lead ->
+                                LeadListCard(
+                                    lead = lead,
+                                    schema = state.schema,
+                                    isDimmedAsCalledToday = state.isLeadCalledToday(lead),
+                                    followUpBucketOverride = FollowUpBucket.TOMORROW,
+                                    modifier = Modifier.animateItem(),
+                                    onClick = { viewModel.openLeadDetails(lead.rowIndex, orderedIds) },
+                                    onCall = { onCall(lead) },
+                                    onWhatsAppFollowUp = { onWhatsAppFollowUp(lead) },
+                                    onWhatsAppPortfolio = { onWhatsAppPortfolio(lead) },
+                                    onQuickNote = { viewModel.openPostCallNote(lead.rowIndex) }
+                                )
+                            }
+                        }
+
+                        // 4. Upcoming Follow-ups (after tomorrow)
+                        if (followUpSections.upcoming.isNotEmpty()) {
+                            item(key = "hdr_upcoming") {
+                                FollowUpSectionHeader(
+                                    title = "Upcoming Follow-ups (${followUpSections.upcoming.size})",
+                                    accentColor = BrandBlue,
+                                    bgColor = BrandBlueContainer,
+                                    textColor = BrandBlue
+                                )
+                            }
+                            items(followUpSections.upcoming, key = { "u_${it.rowIndex}" }) { lead ->
+                                LeadListCard(
+                                    lead = lead,
+                                    schema = state.schema,
+                                    isDimmedAsCalledToday = state.isLeadCalledToday(lead),
+                                    followUpBucketOverride = FollowUpBucket.UPCOMING,
+                                    modifier = Modifier.animateItem(),
+                                    onClick = { viewModel.openLeadDetails(lead.rowIndex, orderedIds) },
+                                    onCall = { onCall(lead) },
+                                    onWhatsAppFollowUp = { onWhatsAppFollowUp(lead) },
+                                    onWhatsAppPortfolio = { onWhatsAppPortfolio(lead) },
+                                    onQuickNote = { viewModel.openPostCallNote(lead.rowIndex) }
+                                )
+                            }
+                        }
+                    } else {
+                        items(leads, key = { it.rowIndex }) { lead ->
+                            val dimAsRead = state.activeTab != BottomTab.CALLS && state.isLeadCalledToday(lead)
+                            LeadListCard(
+                                lead = lead,
+                                schema = state.schema,
+                                isDimmedAsCalledToday = dimAsRead,
+                                modifier = Modifier.animateItem(),
+                                onClick = { viewModel.openLeadDetails(lead.rowIndex, orderedIds) },
+                                onCall = { onCall(lead) },
+                                onWhatsAppFollowUp = { onWhatsAppFollowUp(lead) },
+                                onWhatsAppPortfolio = { onWhatsAppPortfolio(lead) },
+                                onQuickNote = { viewModel.openPostCallNote(lead.rowIndex) }
+                            )
+                        }
                     }
                 }
             }
@@ -830,10 +966,46 @@ private fun FilterDropdownPill(
 }
 
 @Composable
+private fun FollowUpSectionHeader(
+    title: String,
+    accentColor: Color,
+    bgColor: Color,
+    textColor: Color
+) {
+    Surface(
+        color = bgColor,
+        shape = RoundedCornerShape(10.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(9.dp)
+                    .clip(CircleShape)
+                    .background(accentColor)
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = title,
+                color = textColor,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold
+            )
+        }
+    }
+}
+
+@Composable
 private fun LeadListCard(
     lead: LeadRow,
     schema: SchemaMapping,
     isDimmedAsCalledToday: Boolean = false,
+    followUpBucketOverride: FollowUpBucket? = null,
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
     onCall: () -> Unit,
@@ -847,9 +1019,22 @@ private fun LeadListCard(
     val assigned = lead.displayValue(schema.assignedCol)
     val lastCall = lead.displayValue(schema.lastCallCol)
     val followUp = lead.displayValue(schema.followUpCol)
+    val followUpDate = lead.displayValue(schema.followUpDateCol)
 
-    val badgeText = status.ifBlank { followUp }
-    val (accentColor, badgeBg, badgeFg) = statusPalette(badgeText)
+    val badgeText = when (followUpBucketOverride) {
+        FollowUpBucket.MISSED -> "Missed · ${followUpDate.ifBlank { "" }}".trimEnd(' ', '·')
+        FollowUpBucket.TODAY -> "Today"
+        FollowUpBucket.TOMORROW -> "Tomorrow"
+        FollowUpBucket.UPCOMING -> followUpDate.ifBlank { "Upcoming" }
+        else -> status.ifBlank { followUp }
+    }
+    val (accentColor, badgeBg, badgeFg) = when (followUpBucketOverride) {
+        FollowUpBucket.MISSED -> Triple(StatusRed, StatusRedContainer, StatusRed)
+        FollowUpBucket.TODAY -> Triple(CallGreen, CallGreenContainer, CallGreenDarkText)
+        FollowUpBucket.TOMORROW -> Triple(TomorrowYellow, TomorrowYellowBg, TomorrowYellowText)
+        FollowUpBucket.UPCOMING -> Triple(BrandBlue, BrandBlueContainer, BrandBlue)
+        else -> statusPalette(badgeText)
+    }
 
     Card(
         modifier = modifier
@@ -873,9 +1058,13 @@ private fun LeadListCard(
         ) {
             Box(
                 modifier = Modifier
-                    .width(4.dp)
+                    .width(if (followUpBucketOverride == FollowUpBucket.MISSED) 5.dp else 4.dp)
                     .fillMaxHeight()
-                    .background(if (isDimmedAsCalledToday) CallGreen.copy(alpha = 0.6f) else accentColor)
+                    .background(
+                        if (followUpBucketOverride != null) accentColor
+                        else if (isDimmedAsCalledToday) CallGreen.copy(alpha = 0.6f)
+                        else accentColor
+                    )
             )
 
             Column(
