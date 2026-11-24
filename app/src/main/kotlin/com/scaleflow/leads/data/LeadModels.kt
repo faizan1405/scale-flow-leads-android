@@ -84,7 +84,7 @@ data class AppConfig(
     val githubRepo: String = DEFAULT_GITHUB_REPO,
     val darkTheme: Boolean = false,
     val followUpWhatsAppMessage: String = "Hi {{name}}, we are following up regarding the website. Let me know a convenient time to connect.",
-    val portfolioWhatsAppMessage: String = "Hi {{name}}, here is our website portfolio and recent work. Let us know what you think!",
+    val portfolioWhatsAppMessage: String = DEFAULT_PORTFOLIO_MESSAGE,
     val autoOpenNotesAfterCall: Boolean = true,
     val sortBy: String = "Sheet order",
     val preferredNoteColumn: String = "",
@@ -97,6 +97,10 @@ data class AppConfig(
         val DEFAULT_SCRIPT_URL: String
             get() = BuildConfig.DEFAULT_SCRIPT_URL
         const val DEFAULT_GITHUB_REPO = "faizan1405/scale-flow-leads-android"
+        const val LEGACY_PORTFOLIO_MESSAGE =
+            "Hi {{name}}, here is our website portfolio and recent work. Let us know what you think!"
+        const val DEFAULT_PORTFOLIO_MESSAGE =
+            "Hi {{name}}, here is our website portfolio and recent work: https://www.joinscaleflow.in/work\n\nLet us know what you think!"
     }
 }
 

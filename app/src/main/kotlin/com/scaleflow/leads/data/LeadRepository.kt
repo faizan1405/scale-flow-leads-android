@@ -31,7 +31,15 @@ class LeadRepository(context: Context) {
 
     fun loadConfig(): AppConfig {
         val raw = prefs.getString(KEY_CONFIG, null) ?: return AppConfig()
-        return runCatching { json.decodeFromString<AppConfig>(raw) }.getOrElse { AppConfig() }
+        val parsed = runCatching { json.decodeFromString<AppConfig>(raw) }.getOrElse { AppConfig() }
+        // Automatically migrate old placeholder portfolio message to live joinscaleflow.in/work link
+        return if (parsed.portfolioWhatsAppMessage == AppConfig.LEGACY_PORTFOLIO_MESSAGE) {
+            val migrated = parsed.copy(portfolioWhatsAppMessage = AppConfig.DEFAULT_PORTFOLIO_MESSAGE)
+            saveConfig(migrated)
+            migrated
+        } else {
+            parsed
+        }
     }
 
     fun saveConfig(config: AppConfig) {
