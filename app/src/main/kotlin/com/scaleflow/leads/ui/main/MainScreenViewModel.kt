@@ -352,18 +352,20 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
             val startedAt = pendingCallStartedAt
             pendingCallRowIndex = null
 
-            // Wait briefly for Android to commit CallLog entry, then read exact talk duration and log to History!
-            viewModelScope.launch {
-                delay(450L)
-                val duration = CallLogHelper.findRecentCallDuration(appContext, phone, startedAt)
-                logCompletedCall(calledRowIdx, name, phone, duration)
-                _uiState.update {
-                    it.copy(
-                        lastDetectedCallDuration = duration,
-                        postCallLeadRowIndex = if (it.config.autoOpenNotesAfterCall) calledRowIdx else it.postCallLeadRowIndex
-                    )
-                }
+            // Open Post-Call Note sheet IMMEDIATELY (0ms wait), then detect exact duration & sync in background!
+            _uiState.update {
+                it.copy(
+                    lastDetectedCallDuration = "",
+                    postCallLeadRowIndex = if (it.config.autoOpenNotesAfterCall) calledRowIdx else it.postCallLeadRowIndex
+                )
             }
+            viewModelScope.launch {
+                delay(350L)
+                val duration = CallLogHelper.findRecentCallDuration(appContext, phone, startedAt)
+                _uiState.update { it.copy(lastDetectedCallDuration = duration) }
+                logCompletedCallInstantly(calledRowIdx, name, phone, duration)
+            }
+            return
         }
         if (_uiState.value.config.isConnected && !_uiState.value.config.demoMode) {
             refreshLeads(silent = true, showToast = false)
@@ -374,7 +376,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         isForeground = false
     }
 
-    private suspend fun logCompletedCall(rowIndex: Int, leadName: String, phone: String, duration: String) {
+    private fun logCompletedCallInstantly(rowIndex: Int, leadName: String, phone: String, duration: String) {
         val state = _uiState.value
         val entry = HistoryEntry(
             timestamp = formatLastCallTimestamp(),
@@ -388,13 +390,32 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
             newValue = "Talked: $duration",
             callDuration = duration
         )
-        val outcome = repository.logCallHistoryWithOfflineQueue(state.config, state.payload, entry)
+        val saved = repository.applyCallHistoryLocallyAndQueue(state.payload, entry)
         addLog("OK", "Logged call #$rowIndex ($duration)")
         _uiState.update {
             it.copy(
-                payload = outcome.payload,
-                pendingSyncCount = outcome.pendingCount
+                payload = saved.payload,
+                pendingSyncCount = saved.pendingCount
             )
+        }
+        triggerBackgroundFlush()
+    }
+
+    private fun triggerBackgroundFlush() {
+        val config = _uiState.value.config.copy(selectedSheet = "Leads ")
+        viewModelScope.launch {
+            val flush = repository.flushPendingQueue(config)
+            if (flush.flushedCount > 0) {
+                addLog("OK", "Background synced ${flush.flushedCount} change(s) to Sheet")
+            } else if (flush.lastError != null) {
+                addLog("INFO", "Sync queued offline (${flush.remainingCount} pending)")
+            }
+            _uiState.update {
+                it.copy(
+                    pendingSyncCount = flush.remainingCount,
+                    lastSyncedTime = if (flush.flushedCount > 0) formatShortTime() else it.lastSyncedTime
+                )
+            }
         }
     }
 
@@ -572,39 +593,28 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         val phone = lead.displayValue(schema.phoneCol)
         val duration = state.lastDetectedCallDuration
 
-        viewModelScope.launch {
-            _uiState.update { it.copy(isSaving = true) }
-            val outcome = repository.updateLeadWithHistoryAndOfflineQueue(
-                config = state.config,
-                currentPayload = state.payload,
-                rowIndex = rowIndex,
-                updatedFields = fields,
-                caller = state.activeCallerName,
-                leadName = leadName,
-                phone = phone,
-                callDuration = duration
+        // INSTANT (0ms): Save locally, close sheet immediately, and sync in background!
+        val instant = repository.applyUpdateLocallyAndQueue(
+            currentPayload = state.payload,
+            rowIndex = rowIndex,
+            updatedFields = fields,
+            caller = state.activeCallerName,
+            leadName = leadName,
+            phone = phone,
+            callDuration = duration
+        )
+        addLog("INFO", "Saved note locally for #$rowIndex -> syncing in background")
+        _uiState.update {
+            it.copy(
+                payload = instant.payload,
+                isSaving = false,
+                postCallLeadRowIndex = null,
+                lastDetectedCallDuration = "",
+                pendingSyncCount = instant.pendingCount,
+                snackbarMessage = "Saved! Syncing to Sheet..."
             )
-            if (outcome.syncedImmediately) {
-                addLog("OK", "Saved note + history for #$rowIndex")
-            } else {
-                addLog("INFO", "Queued offline note for #$rowIndex (${outcome.pendingCount} pending)")
-            }
-            _uiState.update {
-                it.copy(
-                    payload = outcome.payload,
-                    isSaving = false,
-                    postCallLeadRowIndex = null,
-                    lastDetectedCallDuration = "",
-                    pendingSyncCount = outcome.pendingCount,
-                    lastSyncedTime = if (outcome.syncedImmediately) formatShortTime() else it.lastSyncedTime,
-                    snackbarMessage = if (outcome.syncedImmediately) {
-                        "Saved to ${safeCol ?: "Sheet"} · History logged"
-                    } else {
-                        "Saved offline — will auto-sync when online"
-                    }
-                )
-            }
         }
+        triggerBackgroundFlush()
     }
 
     fun saveLeadEdits(
@@ -612,7 +622,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         updatedFields: Map<String, String>,
         closeSheet: Boolean = true,
         autoStampLastCall: Boolean = true,
-        successMsg: String = "Lead synced & logged to History"
+        successMsg: String = "Saved!"
     ) {
         val state = _uiState.value
         val schema = state.schema
@@ -635,33 +645,26 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         val leadName = lead?.displayValue(schema.nameCol).orEmpty()
         val phone = lead?.displayValue(schema.phoneCol).orEmpty()
 
-        viewModelScope.launch {
-            _uiState.update { it.copy(isSaving = true) }
-            val outcome = repository.updateLeadWithHistoryAndOfflineQueue(
-                config = state.config,
-                currentPayload = state.payload,
-                rowIndex = rowIndex,
-                updatedFields = sanitized,
-                caller = state.activeCallerName,
-                leadName = leadName,
-                phone = phone
+        // INSTANT (0ms): Update UI immediately and flush to Google Sheet in background!
+        val instant = repository.applyUpdateLocallyAndQueue(
+            currentPayload = state.payload,
+            rowIndex = rowIndex,
+            updatedFields = sanitized,
+            caller = state.activeCallerName,
+            leadName = leadName,
+            phone = phone
+        )
+        addLog("INFO", "Updated #$rowIndex locally (${sanitized.keys.joinToString()}) -> syncing")
+        _uiState.update {
+            it.copy(
+                payload = instant.payload,
+                isSaving = false,
+                pendingSyncCount = instant.pendingCount,
+                showEditAllSheet = if (closeSheet) false else it.showEditAllSheet,
+                snackbarMessage = successMsg
             )
-            if (outcome.syncedImmediately) {
-                addLog("OK", "Updated #$rowIndex (${sanitized.keys.joinToString()})")
-            } else {
-                addLog("INFO", "Queued offline edit for #$rowIndex (${outcome.pendingCount} pending)")
-            }
-            _uiState.update {
-                it.copy(
-                    payload = outcome.payload,
-                    isSaving = false,
-                    pendingSyncCount = outcome.pendingCount,
-                    showEditAllSheet = if (closeSheet) false else it.showEditAllSheet,
-                    lastSyncedTime = if (outcome.syncedImmediately) formatShortTime() else it.lastSyncedTime,
-                    snackbarMessage = if (outcome.syncedImmediately) successMsg else "Saved offline — will auto-sync"
-                )
-            }
         }
+        triggerBackgroundFlush()
     }
 
     fun checkForAppUpdate(silent: Boolean = false) {

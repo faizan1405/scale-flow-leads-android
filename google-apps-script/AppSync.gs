@@ -106,17 +106,22 @@ function doPost(e) {
       const callDuration = body.callDuration || "";
 
       const lastCol = sheet.getLastColumn();
-      const existingRow = sheet.getRange(rowIndex, 1, 1, lastCol).getDisplayValues()[0];
+      const rowRange = sheet.getRange(rowIndex, 1, 1, lastCol);
+      const existingValues = rowRange.getValues()[0];
+      const existingDisplay = rowRange.getDisplayValues()[0];
+      const historyToLog = [];
+      let rowDirty = false;
 
       colInfo.columns.forEach(function(col) {
         const header = col.header;
         if (Object.prototype.hasOwnProperty.call(fields, header)) {
           const newVal = String(fields[header] == null ? "" : fields[header]);
-          const oldVal = String(existingRow[col.colIndex - 1] || "");
-          sheet.getRange(rowIndex, col.colIndex).setValue(newVal);
+          const oldVal = String(existingDisplay[col.colIndex - 1] || "");
+          existingValues[col.colIndex - 1] = newVal;
+          rowDirty = true;
 
           if (newVal !== oldVal && header.toLowerCase() !== "last call") {
-            appSyncAppendHistoryRow_(ss, {
+            historyToLog.push({
               caller: caller,
               rowIndex: rowIndex,
               leadName: leadName,
@@ -130,6 +135,12 @@ function doPost(e) {
           }
         }
       });
+
+      // Single batch write (much faster than writing cell-by-cell!)
+      if (rowDirty) {
+        rowRange.setValues([existingValues]);
+      }
+      historyToLog.forEach(function(h) { appSyncAppendHistoryRow_(ss, h); });
 
       SpreadsheetApp.flush();
       return appSyncJson_({
@@ -235,7 +246,6 @@ function appSyncReadSheet_(sheet) {
 
 function appSyncEnsureHistorySheet_(ss) {
   let hist = ss.getSheetByName(APP_SYNC_CONFIG.HISTORY_SHEET);
-  const isNew = !hist;
   if (!hist) {
     hist = ss.insertSheet(APP_SYNC_CONFIG.HISTORY_SHEET);
     hist.appendRow([
@@ -250,20 +260,15 @@ function appSyncEnsureHistorySheet_(ss) {
       "New Value",
       "Call Duration"
     ]);
-  }
-  // Ensure executive header styling on row 1
-  const headerRange = hist.getRange(1, 1, 1, 10);
-  headerRange
-    .setBackground("#1E3A8A")
-    .setFontColor("#FFFFFF")
-    .setFontWeight("bold")
-    .setFontSize(11)
-    .setHorizontalAlignment("center")
-    .setVerticalAlignment("middle");
-  hist.setRowHeight(1, 36);
-  hist.setFrozenRows(1);
-
-  if (isNew) {
+    hist.getRange(1, 1, 1, 10)
+      .setBackground("#1E3A8A")
+      .setFontColor("#FFFFFF")
+      .setFontWeight("bold")
+      .setFontSize(11)
+      .setHorizontalAlignment("center")
+      .setVerticalAlignment("middle");
+    hist.setRowHeight(1, 36);
+    hist.setFrozenRows(1);
     const widths = [180, 110, 65, 170, 125, 95, 130, 180, 220, 120];
     widths.forEach(function(w, i) { hist.setColumnWidth(i + 1, w); });
   }

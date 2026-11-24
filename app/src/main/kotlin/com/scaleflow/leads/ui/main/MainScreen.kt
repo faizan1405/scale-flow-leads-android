@@ -1081,7 +1081,7 @@ private fun SwipableLeadDetailsScreen(
                                 Spacer(Modifier.width(8.dp))
                                 Surface(color = StatusAmberContainer, shape = RoundedCornerShape(999.dp)) {
                                     Text(
-                                        text = "Offline (${state.pendingSyncCount})",
+                                        text = "Syncing (${state.pendingSyncCount})",
                                         color = StatusAmber,
                                         style = MaterialTheme.typography.labelSmall,
                                         fontWeight = FontWeight.Bold,
