@@ -383,10 +383,10 @@ private fun HomeScaffold(
                 )
 
                 BottomTab.CALLS -> LeadsListTab(
-                    title = "Recent Calls",
+                    title = "Today's Calls",
                     state = state,
                     leads = state.filteredCalls,
-                    emptyTitle = "No calls match your filters",
+                    emptyTitle = "No calls made today yet",
                     viewModel = viewModel,
                     onCall = onCallLead,
                     onWhatsAppFollowUp = onWhatsAppFollowUp,
@@ -1983,7 +1983,7 @@ private fun EditEditableFieldsSheet(
         ) {
             Text("Edit Lead Details", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             Text(
-                "Name & Phone are locked. Every saved edit is logged permanently to the History tab.",
+                "Date, Last Call (auto), Name & Phone are locked. All other fields can be edited.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -1999,7 +1999,12 @@ private fun EditEditableFieldsSheet(
                             readOnly = true,
                             label = { Text(header) },
                             trailingIcon = { Icon(Icons.Default.Lock, "Locked", Modifier.size(16.dp)) },
-                            supportingText = { Text("Locked — edit in Google Sheet only") },
+                            supportingText = {
+                                Text(
+                                    if (header == schema.lastCallCol) "Updates automatically when you save"
+                                    else "Locked — Google Sheet only"
+                                )
+                            },
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(12.dp)
                         )

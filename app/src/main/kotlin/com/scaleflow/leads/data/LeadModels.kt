@@ -118,7 +118,12 @@ data class SchemaMapping(
     val dateCol: String?,
     val allHeaders: List<String>
 ) {
-    fun isLockedColumn(header: String): Boolean = header == nameCol || header == phoneCol
+    /**
+     * Locked columns (cannot be manually edited in the app):
+     * Date, Last Call (auto-updated only), Name, and Phone Number.
+     */
+    fun isLockedColumn(header: String): Boolean =
+        header == dateCol || header == lastCallCol || header == nameCol || header == phoneCol
 
     fun isDateColumn(header: String): Boolean =
         header == dateCol ||
@@ -220,6 +225,24 @@ fun formatLastCallTimestamp(date: Date = Date()): String {
     val formatted = sdf.format(date)
     return formatted.replace(" am,", " AM,").replace(" pm,", " PM,")
 }
+
+/**
+ * Checks whether a Last Call / History timestamp string falls on [today].
+ * Matches both "02:45 PM, 24 Nov 2026" and "24-Nov-2026".
+ */
+fun isTimestampFromDate(timestamp: String, today: Date = Date()): Boolean {
+    val clean = timestamp.trim()
+    if (clean.isEmpty()) return false
+    val spaced = SimpleDateFormat("dd MMM yyyy", Locale.ENGLISH).format(today)
+    val dashed = SimpleDateFormat("dd-MMM-yyyy", Locale.ENGLISH).format(today)
+    val shortSpaced = SimpleDateFormat("d MMM yyyy", Locale.ENGLISH).format(today)
+    return clean.contains(spaced, ignoreCase = true) ||
+        clean.contains(dashed, ignoreCase = true) ||
+        clean.contains(shortSpaced, ignoreCase = true)
+}
+
+fun todayKey(date: Date = Date()): String =
+    SimpleDateFormat("yyyy-MM-dd", Locale.US).format(date)
 
 fun appendNotePreservingCase(existing: String, addition: String): String {
     val cleanAddition = addition.trim()

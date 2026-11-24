@@ -252,6 +252,30 @@ class LeadRepository(context: Context) {
         }
     }
 
+    fun loadTodayCalledRows(): Map<Int, Long> {
+        val savedDate = prefs.getString(KEY_TODAY_CALLS_DATE, "")
+        val today = todayKey()
+        if (savedDate != today) {
+            prefs.edit()
+                .putString(KEY_TODAY_CALLS_DATE, today)
+                .remove(KEY_TODAY_CALLS_MAP)
+                .apply()
+            return emptyMap()
+        }
+        val raw = prefs.getString(KEY_TODAY_CALLS_MAP, null) ?: return emptyMap()
+        return runCatching { json.decodeFromString<Map<Int, Long>>(raw) }.getOrElse { emptyMap() }
+    }
+
+    fun recordCalledToday(rowIndex: Int): Map<Int, Long> {
+        val current = loadTodayCalledRows().toMutableMap()
+        current[rowIndex] = System.currentTimeMillis()
+        prefs.edit()
+            .putString(KEY_TODAY_CALLS_DATE, todayKey())
+            .putString(KEY_TODAY_CALLS_MAP, json.encodeToString(current))
+            .apply()
+        return current
+    }
+
     private fun nowIso(): String =
         SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).format(Date())
 
@@ -259,5 +283,7 @@ class LeadRepository(context: Context) {
         private const val KEY_CONFIG = "app_config_json"
         private const val KEY_CACHE = "cached_sheet_payload_json"
         private const val KEY_PENDING_QUEUE = "offline_pending_sync_queue_json"
+        private const val KEY_TODAY_CALLS_DATE = "today_calls_date_key"
+        private const val KEY_TODAY_CALLS_MAP = "today_calls_map_json"
     }
 }

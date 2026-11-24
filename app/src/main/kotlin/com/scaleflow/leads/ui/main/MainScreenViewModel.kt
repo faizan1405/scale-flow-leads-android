@@ -17,6 +17,7 @@ import com.scaleflow.leads.data.SyncLogEntry
 import com.scaleflow.leads.data.appendNotePreservingCase
 import com.scaleflow.leads.data.displayValue
 import com.scaleflow.leads.data.formatLastCallTimestamp
+import com.scaleflow.leads.data.isTimestampFromDate
 import com.scaleflow.leads.data.rawValue
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -121,8 +122,9 @@ data class LeadsUiState(
     val isCheckingUpdate: Boolean = false,
     val isDownloadingUpdate: Boolean = false,
     val downloadProgress: Float = 0f,
-    val currentVersion: String = "1.4.0",
-    val logs: List<SyncLogEntry> = emptyList()
+    val currentVersion: String = "1.5.3",
+    val logs: List<SyncLogEntry> = emptyList(),
+    val todayCalledRowTimes: Map<Int, Long> = emptyMap()
 ) {
     val detailLead: LeadRow?
         get() = detailLeadRowIndex?.let { idx -> payload.rows.firstOrNull { it.rowIndex == idx } }
@@ -273,11 +275,24 @@ data class LeadsUiState(
             )
         }
 
+    /**
+     * Calls tab shows ONLY leads called TODAY (newest call first), resetting fresh every day!
+     */
     val filteredCalls: List<LeadRow>
         get() {
-            val base = payload.rows.filter { it.displayValue(schema.lastCallCol).isNotBlank() }
-            return LeadFilterEngine.filterAndSort(
-                rows = base,
+            val todayHistoryRows = payload.history
+                .filter { it.action.equals("Call", ignoreCase = true) && isTimestampFromDate(it.timestamp) }
+                .map { it.rowIndex }
+                .toSet()
+
+            val todayBase = payload.rows.filter { row ->
+                todayCalledRowTimes.containsKey(row.rowIndex) ||
+                    todayHistoryRows.contains(row.rowIndex) ||
+                    isTimestampFromDate(row.displayValue(schema.lastCallCol))
+            }
+
+            val filtered = LeadFilterEngine.filterAndSort(
+                rows = todayBase,
                 schema = schema,
                 searchQuery = searchQuery,
                 selectedStatusFilter = selectedStatusFilter,
@@ -286,6 +301,13 @@ data class LeadsUiState(
                 callerProfile = config.callerProfile,
                 sortBy = config.sortBy
             )
+
+            // Default newest call at the top when using Sheet order
+            return if (config.sortBy == "Sheet order") {
+                filtered.sortedByDescending { todayCalledRowTimes[it.rowIndex] ?: it.rowIndex.toLong() }
+            } else {
+                filtered
+            }
         }
 
     private fun dedupeIgnoreCase(items: List<String>): List<String> {
@@ -321,6 +343,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         repository.saveConfig(loadedConfig)
         val cached = repository.loadCachedPayload() ?: SheetPayload()
         val pendingCount = repository.loadPendingOps().size
+        val todayCalls = repository.loadTodayCalledRows()
 
         _uiState.update {
             it.copy(
@@ -328,6 +351,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
                 payload = cached,
                 schema = SchemaMapping.detect(cached.headers),
                 pendingSyncCount = pendingCount,
+                todayCalledRowTimes = todayCalls,
                 lastSyncedTime = if (cached.rows.isNotEmpty()) formatShortTime() else "",
                 currentVersion = updater.currentVersionName()
             )
@@ -345,6 +369,10 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
 
     fun onAppResumed() {
         isForeground = true
+        // Refresh today's call map so crossing midnight automatically clears Calls tab
+        val freshTodayCalls = repository.loadTodayCalledRows()
+        _uiState.update { it.copy(todayCalledRowTimes = freshTodayCalls) }
+
         val calledRowIdx = pendingCallRowIndex
         if (calledRowIdx != null) {
             val phone = pendingCallPhone
@@ -454,6 +482,8 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         pendingCallPhone = lead.displayValue(_uiState.value.schema.phoneCol)
         pendingCallLeadName = lead.displayValue(_uiState.value.schema.nameCol)
         pendingCallStartedAt = System.currentTimeMillis()
+        val updatedToday = repository.recordCalledToday(lead.rowIndex)
+        _uiState.update { it.copy(todayCalledRowTimes = updatedToday) }
         addLog("INFO", "Dialed lead #${lead.rowIndex} ($pendingCallLeadName)")
     }
 
@@ -548,13 +578,11 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
     fun saveFollowUpChoice(rowIndex: Int, followUpValue: String) {
         val state = _uiState.value
         val followCol = state.schema.followUpCol ?: return
-        val fields = mutableMapOf(followCol to followUpValue)
-        state.schema.lastCallCol?.let { fields[it] = formatLastCallTimestamp() }
         saveLeadEdits(
             rowIndex = rowIndex,
-            updatedFields = fields,
+            updatedFields = mapOf(followCol to followUpValue),
             closeSheet = false,
-            autoStampLastCall = false,
+            autoStampLastCall = true,
             successMsg = "Follow-up set to $followUpValue"
         )
     }
@@ -603,6 +631,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
             phone = phone,
             callDuration = duration
         )
+        val updatedToday = repository.recordCalledToday(rowIndex)
         addLog("INFO", "Saved note locally for #$rowIndex -> syncing in background")
         _uiState.update {
             it.copy(
@@ -611,6 +640,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
                 postCallLeadRowIndex = null,
                 lastDetectedCallDuration = "",
                 pendingSyncCount = instant.pendingCount,
+                todayCalledRowTimes = updatedToday,
                 snackbarMessage = "Saved! Syncing to Sheet..."
             )
         }
@@ -635,11 +665,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
 
         val lastCallCol = schema.lastCallCol
         if (autoStampLastCall && lastCallCol != null) {
-            val prevLastCall = lead?.rawValue(lastCallCol).orEmpty()
-            val submittedLastCall = sanitized[lastCallCol]
-            if (submittedLastCall == null || submittedLastCall == prevLastCall) {
-                sanitized[lastCallCol] = formatLastCallTimestamp()
-            }
+            sanitized[lastCallCol] = formatLastCallTimestamp()
         }
 
         val leadName = lead?.displayValue(schema.nameCol).orEmpty()
@@ -654,12 +680,14 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
             leadName = leadName,
             phone = phone
         )
+        val updatedToday = repository.recordCalledToday(rowIndex)
         addLog("INFO", "Updated #$rowIndex locally (${sanitized.keys.joinToString()}) -> syncing")
         _uiState.update {
             it.copy(
                 payload = instant.payload,
                 isSaving = false,
                 pendingSyncCount = instant.pendingCount,
+                todayCalledRowTimes = updatedToday,
                 showEditAllSheet = if (closeSheet) false else it.showEditAllSheet,
                 snackbarMessage = successMsg
             )

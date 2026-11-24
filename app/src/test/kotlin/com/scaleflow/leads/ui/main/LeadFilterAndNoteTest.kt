@@ -4,6 +4,7 @@ import com.scaleflow.leads.data.LeadRow
 import com.scaleflow.leads.data.SchemaMapping
 import com.scaleflow.leads.data.appendNotePreservingCase
 import com.scaleflow.leads.data.formatLastCallTimestamp
+import com.scaleflow.leads.data.isTimestampFromDate
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -126,10 +127,24 @@ class LeadFilterAndNoteTest {
         assertFalse(schema.noteColumnOptions.contains("Follow-Ups"))
         assertTrue(schema.noteColumnOptions.contains("Faizan"))
         assertTrue(schema.noteColumnOptions.contains("Saurabh"))
+        assertTrue(schema.isLockedColumn("Date"))
+        assertTrue(schema.isLockedColumn("Last Call"))
         assertTrue(schema.isLockedColumn("Name"))
         assertTrue(schema.isLockedColumn("Numbers"))
         assertFalse(schema.isLockedColumn("Lead Type"))
         assertFalse(schema.isLockedColumn("Follow-Ups"))
+        assertFalse(schema.isLockedColumn("Assined to"))
+    }
+
+    @Test
+    fun todayTimestampCheckMatchesTodayAndRejectsOlderDates() {
+        val nov24 = Calendar.getInstance().apply {
+            set(2026, Calendar.NOVEMBER, 24, 15, 0, 0)
+        }.time
+        assertTrue(isTimestampFromDate("02:45 PM, 24 Nov 2026", nov24))
+        assertTrue(isTimestampFromDate("24-Nov-2026", nov24))
+        assertFalse(isTimestampFromDate("31-Oct-2026", nov24))
+        assertFalse(isTimestampFromDate("11:50 PM, 23 Nov 2026", nov24))
     }
 
     @Test
