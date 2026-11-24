@@ -244,6 +244,16 @@ data class LeadsUiState(
     fun historyForLead(rowIndex: Int): List<HistoryEntry> =
         payload.history.filter { it.rowIndex == rowIndex }
 
+    fun isLeadCalledToday(lead: LeadRow): Boolean {
+        if (todayCalledRowTimes.containsKey(lead.rowIndex)) return true
+        if (isTimestampFromDate(lead.displayValue(schema.lastCallCol))) return true
+        return payload.history.any {
+            it.rowIndex == lead.rowIndex &&
+                it.action.equals("Call", ignoreCase = true) &&
+                isTimestampFromDate(it.timestamp)
+        }
+    }
+
     val filteredLeads: List<LeadRow>
         get() = LeadFilterEngine.filterAndSort(
             rows = payload.rows,

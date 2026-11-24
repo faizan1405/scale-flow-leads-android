@@ -124,6 +124,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -774,9 +775,11 @@ private fun LeadsListTab(
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     items(leads, key = { it.rowIndex }) { lead ->
+                        val dimAsRead = state.activeTab != BottomTab.CALLS && state.isLeadCalledToday(lead)
                         LeadListCard(
                             lead = lead,
                             schema = state.schema,
+                            isDimmedAsCalledToday = dimAsRead,
                             modifier = Modifier.animateItem(),
                             onClick = { viewModel.openLeadDetails(lead.rowIndex, orderedIds) },
                             onCall = { onCall(lead) },
@@ -830,6 +833,7 @@ private fun FilterDropdownPill(
 private fun LeadListCard(
     lead: LeadRow,
     schema: SchemaMapping,
+    isDimmedAsCalledToday: Boolean = false,
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
     onCall: () -> Unit,
@@ -850,10 +854,17 @@ private fun LeadListCard(
     Card(
         modifier = modifier
             .fillMaxWidth()
+            .alpha(if (isDimmedAsCalledToday) 0.58f else 1f)
             .clickable { onClick() },
         shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+        colors = CardDefaults.cardColors(
+            containerColor = if (isDimmedAsCalledToday) {
+                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
+            } else {
+                MaterialTheme.colorScheme.surface
+            }
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = if (isDimmedAsCalledToday) 0.dp else 1.5.dp)
     ) {
         Row(
             modifier = Modifier
@@ -864,7 +875,7 @@ private fun LeadListCard(
                 modifier = Modifier
                     .width(4.dp)
                     .fillMaxHeight()
-                    .background(accentColor)
+                    .background(if (isDimmedAsCalledToday) CallGreen.copy(alpha = 0.6f) else accentColor)
             )
 
             Column(
@@ -881,20 +892,36 @@ private fun LeadListCard(
                         modifier = Modifier.weight(1f),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Surface(color = BrandBlueContainer, shape = RoundedCornerShape(6.dp)) {
-                            Text(
-                                text = "#${lead.rowIndex}",
-                                color = BrandBlue,
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold,
+                        Surface(
+                            color = if (isDimmedAsCalledToday) CallGreenContainer else BrandBlueContainer,
+                            shape = RoundedCornerShape(6.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                            )
+                            ) {
+                                if (isDimmedAsCalledToday) {
+                                    Icon(
+                                        Icons.Default.Check,
+                                        contentDescription = "Called today",
+                                        tint = CallGreenDarkText,
+                                        modifier = Modifier.size(11.dp)
+                                    )
+                                    Spacer(Modifier.width(2.dp))
+                                }
+                                Text(
+                                    text = "#${lead.rowIndex}",
+                                    color = if (isDimmedAsCalledToday) CallGreenDarkText else BrandBlue,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
                         }
                         Spacer(Modifier.width(7.dp))
                         Text(
                             text = name,
                             style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold,
+                            fontWeight = if (isDimmedAsCalledToday) FontWeight.Normal else FontWeight.Bold,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
